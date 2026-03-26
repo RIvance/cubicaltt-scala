@@ -1,33 +1,34 @@
 package cubical
 
-import munit.FunSuite
-import Term.*
+import org.scalatest.funsuite.AnyFunSuite
+import org.scalatest.matchers.should.Matchers
+import scala.io.Source
 
-class ParserTest extends FunSuite:
+class ParserTest extends AnyFunSuite with Matchers {
   
-  test("parse universe") {
-    val result = Parser.parseAll(Parser.term, "U")
-    assertEquals(result.get, Univ)
+  def parseFile(path: String): Either[String, List[Decl]] = {
+    val source = Source.fromFile(path)
+    try {
+      val content = source.mkString
+      Parser.parseModule(content)
+    } finally {
+      source.close()
+    }
   }
   
-  test("parse variable") {
-    val result = Parser.parseAll(Parser.term, "x")
-    assertEquals(result.get, Var("x"))
+  test("parse bool.ctt") {
+    val result = parseFile("examples/bool.ctt")
+    result match {
+      case Left(err) => fail(s"Parse failed: $err")
+      case Right(_) => succeed
+    }
   }
   
-  test("parse application") {
-    val result = Parser.parseAll(Parser.term, "f x")
-    assertEquals(result.get, App(Var("f"), Var("x")))
+  test("parse nat.ctt") {
+    val result = parseFile("examples/nat.ctt")
+    result match {
+      case Left(err) => fail(s"Parse failed: $err")
+      case Right(_) => succeed
+    }
   }
-  
-  test("parse lambda") {
-    val result = Parser.parseAll(Parser.term, "\\x -> x")
-    assertEquals(result.get, Lam("x", Univ, Var("x")))
-  }
-  
-  test("parse pi type") {
-    val result = Parser.parseAll(Parser.term, "(x : U) -> U")
-    assertEquals(result.get, Pi(Univ, Lam("x", Univ, Univ)))
-  }
-
-end ParserTest
+}

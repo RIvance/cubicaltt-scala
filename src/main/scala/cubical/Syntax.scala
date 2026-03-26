@@ -32,6 +32,11 @@ enum Branch:
   /** c x₁ ... xₙ i₁ ... iₘ → body  (path branch) */
   case PBranch(ctor: Ident, vars: List[Ident], dims: List[Name], body: Term)
 
+/** Top-level declaration */
+enum Decl:
+  case DataDecl(name: Ident, params: Tele, ty: Term, constructors: List[(Ident, Term)])
+  case DefDecl(name: Ident, ty: Term, body: Term)
+
 /** A group of (possibly mutual) declarations */
 enum Decls:
   case MutualDecls(loc: Loc, decls: List[(Ident, (Term, Term))])  // (name, (type, def))

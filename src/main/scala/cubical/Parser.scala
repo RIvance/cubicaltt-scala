@@ -2,6 +2,7 @@ package cubical
 
 import scala.util.parsing.combinator.*
 import Term.*
+import Decl.*
 
 /** Parser for cubical type theory syntax.
  *  Compatible with Mortberg's grammar but with Unicode support.
@@ -13,8 +14,10 @@ object Parser extends RegexParsers:
   override def skipWhitespace = true
   override protected val whiteSpace = """(\s|--.*)+""".r  // Handle comments
   
+  val reserved = Set("data", "U", "PathP", "comp", "fill", "Glue", "glue", "unglue")
+  
   def ident: Parser[String] = 
-    """[a-zA-Z_][a-zA-Z0-9_']*""".r
+    """[a-zA-Z_][a-zA-Z0-9_']*""".r.filter(!reserved.contains(_))
   
   def number: Parser[Int] = 
     """[0-9]+""".r ^^ (_.toInt)
@@ -58,6 +61,32 @@ object Parser extends RegexParsers:
     "U" ^^^ Univ |
     ident ^^ Var.apply |
     "(" ~> term <~ ")"
+  
+  // ── Declarations ─────────────────────────────────────────
+  
+  def decl: Parser[Decl] =
+    ("data" ~> ident) ~ ("=" ~> rep1(constructor)) ^^ {
+      case name ~ constrs => DataDecl(name, Nil, Univ, constrs)
+    } |
+    (ident <~ ":") ~ (term <~ "=") ~ term ^^ {
+      case name ~ ty ~ body => DefDecl(name, ty, body)
+    }
+  
+  def constructor: Parser[(String, Term)] =
+    opt("|") ~> ident ~ opt("(" ~> ident ~ (":" ~> term) <~ ")") ^^ {
+      case name ~ Some(param ~ ty) => (name, ty)
+      case name ~ None => (name, Univ)
+    }
+  
+  def module: Parser[List[Decl]] = rep(decl)
+  
+  // ── Public API ───────────────────────────────────────────
+  
+  def parseModule(input: String): Either[String, List[Decl]] =
+    parseAll(module, input) match {
+      case Success(result, _) => Right(result)
+      case NoSuccess(msg, _) => Left(msg)
+    }
 
 end Parser
 
