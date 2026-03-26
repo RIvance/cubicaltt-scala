@@ -14,7 +14,7 @@ object Parser extends RegexParsers:
   override def skipWhitespace = true
   override protected val whiteSpace = """(\s|--.*)+""".r  // Handle comments
   
-  val reserved = Set("data", "U", "PathP", "comp", "fill", "Glue", "glue", "unglue")
+  val reserved = Set("data", "module", "where", "import", "U", "PathP", "comp", "fill", "Glue", "glue", "unglue", "split")
   
   def ident: Parser[String] = 
     """[a-zA-Z_][a-zA-Z0-9_']*""".r.filter(!reserved.contains(_))
@@ -64,6 +64,12 @@ object Parser extends RegexParsers:
   
   // ── Declarations ─────────────────────────────────────────
   
+  def moduleHeader: Parser[String] =
+    "module" ~> ident <~ "where"
+  
+  def importDecl: Parser[Unit] =
+    "import" ~> ident ^^^ ()
+  
   def decl: Parser[Decl] =
     ("data" ~> ident) ~ ("=" ~> rep1(constructor)) ^^ {
       case name ~ constrs => DataDecl(name, Nil, Univ, constrs)
@@ -78,7 +84,8 @@ object Parser extends RegexParsers:
       case name ~ None => (name, Univ)
     }
   
-  def module: Parser[List[Decl]] = rep(decl)
+  def module: Parser[List[Decl]] = 
+    opt(moduleHeader) ~> rep(importDecl) ~> rep(decl)
   
   // ── Public API ───────────────────────────────────────────
   
