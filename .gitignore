@@ -1,0 +1,30 @@
+# sbt specific
+target/
+project/target/
+project/project/
+
+# Scala-IDE specific
+.scala_dependencies
+.worksheet
+.cache
+.classpath
+.project
+.settings/
+
+# IntelliJ
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# VS Code
+.vscode/
+.metals/
+.bloop/
+
+# Mac
+.DS_Store
+
+# Logs
+*.log
