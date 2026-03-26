@@ -9,7 +9,7 @@ lazy val root = project
 
     libraryDependencies ++= Seq(
       "org.scala-lang.modules" %% "scala-parser-combinators" % "2.3.0",
-      "org.scalameta" %% "munit" % "0.7.29" % Test
+      "org.scalatest" %% "scalatest" % "3.2.18" % Test
     ),
 
     scalacOptions ++= Seq(
