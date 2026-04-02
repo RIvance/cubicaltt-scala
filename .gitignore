@@ -32,3 +32,13 @@ out/
 # scala-cli
 .bsp/
 .scala-build/
+
+# temp files
+*.tmp
+*.temp
+*.swp
+*.swo
+temp/
+tmp/
+temp-*/
+tmp-*/

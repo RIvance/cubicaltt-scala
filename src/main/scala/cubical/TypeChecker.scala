@@ -1,308 +1,725 @@
 package cubical
 
-import Value.*
-import Term.*
-import Formula.*
-import Eval.*
+import Val.*
+import Branch.{OBranch, PBranch}
+import Label.{lookupLabel, labelName}
+import Branch.branchName
+import Eval.{nominalVal, nominalEnvironment}
 
-/** Type-checking context.
- *
- *  The typechecking monad is modelled as a pure Either-based result
- *  (no IO needed until we add printing/holes).
- *  Context is threaded explicitly.
- */
-case class TCtx(
-  env:     Env,           // evaluation environment
-  types:   Map[Ident, Value],  // typing context Γ
-  names:   List[Ident],   // freshness list for name generation
-  verbose: Boolean = false
-):
-  def withVar(x: Ident, ty: Value): TCtx =
-    val v = mkVar(x, ty)
-    copy(
-      env   = env.updated(x, v),
-      types = types.updated(x, ty),
-      names = x :: names
+case class TEnv(
+  names: List[String],
+  indent: Int,
+  env: Environment,
+  verbose: Boolean
+)
+
+object TEnv {
+  val verboseEnv: TEnv = TEnv(Nil, 0, Environment.empty, verbose = true)
+  val silentEnv: TEnv = TEnv(Nil, 0, Environment.empty, verbose = false)
+}
+
+object TypeChecker {
+
+  type Typing[A] = TEnv => Either[String, A]
+
+  private def pure[A](a: A): Typing[A] = _ => Right(a)
+
+  private def throwError[A](msg: String): Typing[A] = _ => Left(msg)
+
+  private def asks[A](f: TEnv => A): Typing[A] = tenv => Right(f(tenv))
+
+  private def local[A](f: TEnv => TEnv)(m: Typing[A]): Typing[A] =
+    tenv => m(f(tenv))
+
+  private def flatMap[A, B](m: Typing[A])(f: A => Typing[B]): Typing[B] =
+    tenv => m(tenv).flatMap(a => f(a)(tenv))
+
+  private def andThen[A, B](m: Typing[A])(next: Typing[B]): Typing[B] =
+    tenv => m(tenv).flatMap(_ => next(tenv))
+
+  private def sequence_[A](ms: Iterable[Typing[A]]): Typing[Unit] =
+    tenv => {
+      var result: Either[String, Unit] = Right(())
+      val iter = ms.iterator
+      while (result.isRight && iter.hasNext) {
+        result = iter.next()(tenv).map(_ => ())
+      }
+      result
+    }
+
+  private def unless(cond: Boolean)(action: Typing[Unit]): Typing[Unit] =
+    if (cond) pure(()) else action
+
+  private def unlessM(condM: Typing[Boolean])(action: Typing[Unit]): Typing[Unit] =
+    tenv => condM(tenv).flatMap(c => if (c) Right(()) else action(tenv))
+
+  private def trace(s: String): Typing[Unit] =
+    tenv => {
+      if (tenv.verbose) println(s)
+      Right(())
+    }
+
+  // ============================================================
+  // Running computations
+  // ============================================================
+
+  def runTyping[A](tenv: TEnv, t: Typing[A]): Either[String, A] = t(tenv)
+
+  def runDecls(tenv: TEnv, d: Declarations): Either[String, TEnv] =
+    runTyping(tenv, andThen(checkDecls(d))(pure(addDecls(d, tenv))))
+
+  def runDeclss(tenv: TEnv, ds: List[Declarations]): (Option[String], TEnv) = ds match {
+    case Nil => (None, tenv)
+    case d :: rest =>
+      runDecls(tenv, d) match {
+        case Right(tenv2) => runDeclss(tenv2, rest)
+        case Left(s) => (Some(s), tenv)
+      }
+  }
+
+  def runInfer(tenv: TEnv, e: Term): Either[String, Val] =
+    runTyping(tenv, infer(e))
+
+  // ============================================================
+  // Environment modifiers
+  // ============================================================
+
+  private def addTypeVal(xv: (Ident, Val), tenv: TEnv): TEnv = {
+    val (x, a) = xv
+    val w = Eval.mkVarNice(tenv.names, x, a)
+    val n = w match { case VVar(n, _) => n; case _ => x }
+    TEnv(
+      n :: tenv.names,
+      tenv.indent,
+      Environment.update((x, w), tenv.env),
+      tenv.verbose
     )
+  }
 
-  def withDim(i: Name): TCtx =
-    copy(env = env.subst(i, Atom(i)))
+  private def addSub(iphi: (Name, Formula), tenv: TEnv): TEnv =
+    tenv.copy(env = Environment.substitute(iphi, tenv.env))
 
-  def withDecls(loc: Loc, ds: List[(Ident, (Term, Term))]): TCtx =
-    copy(env = env.withDecls(loc, ds))
+  private def addSubs(iphis: List[(Name, Formula)], tenv: TEnv): TEnv =
+    iphis.foldRight(tenv)((iphi, t) => addSub(iphi, t))
 
-  def applyFace(alpha: Face): TCtx =
-    copy(env = env.applyFace(alpha))
+  private def addType(xa: (Ident, Term), tenv: TEnv): TEnv = {
+    val (x, a) = xa
+    addTypeVal((x, Eval.eval(a, tenv.env)), tenv)
+  }
 
-object TCtx:
-  val empty: TCtx = TCtx(Env.empty, Map.empty, Nil)
+  private def addBranch(nvs: List[(Ident, Val)], nu: Environment, tenv: TEnv): TEnv = {
+    val newNames = nvs.collect { case (_, VVar(n, _)) => n }
+    TEnv(
+      newNames ++ tenv.names,
+      tenv.indent,
+      Environment.updateAll(nvs, tenv.env),
+      tenv.verbose
+    )
+  }
 
-// ── Type-checker result ────────────────────────────────────
+  private def addDecls(d: Declarations, tenv: TEnv): TEnv =
+    tenv.copy(env = Environment.addDecl(d, tenv.env))
 
-type TCResult[A] = Either[TCError, A]
+  private def addTele(xas: Telescope, tenv: TEnv): TEnv =
+    xas.foldLeft(tenv)((t, xa) => addType(xa, t))
 
-case class TCError(msg: String, loc: Option[Loc] = None):
-  override def toString: String = loc.fold(msg)(l => s"$l: $msg")
+  private def faceEnv(alpha: Face, tenv: TEnv): TEnv =
+    tenv.copy(env = Nominal.face(tenv.env, alpha))
 
-object TypeChecker:
+  // ============================================================
+  // Utility functions
+  // ============================================================
 
-  def check(ctx: TCtx, t: Term, ty: Value): TCResult[Unit] =
-    ty match
-      // ── Univ check: any term that infers a universe ────────
-      case VUniv => infer(ctx, t).map(_ => ())
+  private def getLblType(c: LIdent, v: Val): Typing[(Telescope, Environment)] = _ => v match {
+    case Val.Closure(Term.Sum(_, _, cas), r) =>
+      lookupLabel(c, cas) match {
+        case Some(as) => Right((as, r))
+        case None => Left(s"getLblType: $c in $cas")
+      }
+    case Val.Closure(Term.HSum(_, _, cas), r) =>
+      lookupLabel(c, cas) match {
+        case Some(as) => Right((as, r))
+        case None => Left(s"getLblType: $c in $cas")
+      }
+    case _ => Left(s"expected a data type for the constructor $c but got $v")
+  }
 
-      // ── Pi: check a lambda against Pi type ────────────────
-      case VPi(a, b) => t match
-        case Lam(x, ann, body) =>
-          for
-            _ <- checkTy(ctx, ann)
-            annV = eval(ann, ctx.env)
-            _ <- conv(ctx, annV, a).left.map(e => TCError(s"Lambda annotation mismatch: ${e.msg}"))
-            ctx2 = ctx.withVar(x, a)
-            bV   = appClosure(b, mkVar(x, a))
-            _ <- check(ctx2, body, bV)
-          yield ()
-        case _ =>
-          // eta-expand check
-          val x = freshIdent("x", ctx.names)
-          val ctx2 = ctx.withVar(x, a)
-          val bV = appClosure(b, mkVar(x, a))
-          check(ctx2, App(t, Var(x)), bV)
+  private def mkVars(ns: List[String], tele: Telescope, nu: Environment): List[(Ident, Val)] = tele match {
+    case Nil => Nil
+    case (x, a) :: xas =>
+      val w = Eval.mkVarNice(ns, x, Eval.eval(a, nu))
+      val n = w match { case VVar(n, _) => n; case _ => x }
+      (x, w) :: mkVars(n :: ns, xas, Environment.update((x, w), nu))
+  }
 
-      // ── Sigma: check a pair ────────────────────────────────
-      case VSigma(a, b) => t match
-        case Pair(u, v) =>
-          for
-            _ <- check(ctx, u, a)
-            uV = eval(u, ctx.env)
-            bV = appClosure(b, uV)
-            _ <- check(ctx, v, bV)
-          yield ()
-        case _ =>
-          // let inference handle it
-          for
-            infTy <- infer(ctx, t)
-            _ <- conv(ctx, infTy, ty)
-          yield ()
+  private def convertM(u: Val, v: Val): Typing[Boolean] =
+    tenv => Right(Eval.convert(tenv.names, u, v))
 
-      // ── PathP: check a PLam against PathP ─────────────────
-      case VPathP(a, u, v) => t match
-        case PLam(i, body) =>
-          val ctx2 = ctx.withDim(i)
-          val ai = appFormula(a, Atom(i))
-          for
-            _ <- check(ctx2, body, ai)
-            // check endpoints
-            bodyAtZero = eval(body, ctx.env.subst(i, FZero))
-            bodyAtOne  = eval(body, ctx.env.subst(i, FOne))
-            _ <- conv(ctx, bodyAtZero, u)
-            _ <- conv(ctx, bodyAtOne,  v)
-          yield ()
-        case _ =>
-          for
-            infTy <- infer(ctx, t)
-            _ <- conv(ctx, infTy, ty)
-          yield ()
+  private def evalTyping(t: Term): Typing[Val] =
+    tenv => Right(Eval.eval(t, tenv.env))
 
-      // ── Data constructors ──────────────────────────────────
-      case VCon(_, _) =>
-        for
-          infTy <- infer(ctx, t)
-          _ <- conv(ctx, infTy, ty)
-        yield ()
+  // ============================================================
+  // The bidirectional type checker
+  // ============================================================
 
-      // ── Default: infer and compare ─────────────────────────
-      case _ =>
-        for
-          infTy <- infer(ctx, t)
-          _ <- conv(ctx, infTy, ty)
-        yield ()
+  def check(a: Val, t: Term): Typing[Unit] = tenv => (a, t) match {
+    case (_, Term.Undef(_, _)) => Right(())
 
-  def checkTy(ctx: TCtx, t: Term): TCResult[Unit] =
-    check(ctx, t, VUniv)
+    case (_, Term.Hole(l)) =>
+      val e = Environment.contextOfEnv(tenv.env).reverse.mkString("\n")
+      val ns = tenv.names
+      if (tenv.verbose) {
+        println(s"\nHole at $l:\n\n$e${"—" * 80}\n${Eval.normal(ns, a)}\n")
+      }
+      Right(())
 
-  def infer(ctx: TCtx, t: Term): TCResult[Value] = t match
-    case Var(x) =>
-      ctx.types.get(x).toRight(TCError(s"Unbound variable: $x"))
+    case (_, Term.Con(c, es)) =>
+      flatMap(getLblType(c, a)) { case (bs, nu) =>
+        checks(bs, nu, es)
+      }(tenv)
 
-    case Univ => Right(VUniv)
+    case (VU, Term.Pi(f)) => checkFam(f)(tenv)
 
-    case Pi(a, b) =>
-      for
-        _ <- checkTy(ctx, a)
-        aV = eval(a, ctx.env)
-        x = freshIdent("x", ctx.names)
-        ctx2 = ctx.withVar(x, aV)
-        _ <- checkTy(ctx2, b)
-      yield VUniv
+    case (VU, Term.Sigma(f)) => checkFam(f)(tenv)
 
-    case Sigma(a, b) =>
-      for
-        _ <- checkTy(ctx, a)
-        aV = eval(a, ctx.env)
-        x = freshIdent("x", ctx.names)
-        ctx2 = ctx.withVar(x, aV)
-        _ <- checkTy(ctx2, b)
-      yield VUniv
+    case (VU, Term.Sum(_, _, bs)) =>
+      sequence_(bs.map {
+        case Label.OLabel(_, tele) => checkTele(tele)
+        case Label.PLabel(_, _, _, _) =>
+          throwError(s"check: no path constructor allowed in $t")
+      })(tenv)
 
-    case App(f, a) =>
-      for
-        fTy <- infer(ctx, f)
-        res <- fTy match
-          case VPi(dom, cod) =>
-            check(ctx, a, dom).map { _ =>
-              val aV = eval(a, ctx.env)
-              appClosure(cod, aV)
+    case (VU, Term.HSum(_, _, bs)) =>
+      sequence_(bs.map {
+        case Label.OLabel(_, tele) => checkTele(tele)
+        case Label.PLabel(_, tele, is, ts) =>
+          (tenv2: TEnv) => {
+            checkTele(tele)(tenv2).flatMap { _ =>
+              val rho = tenv2.env
+              val domNames = SystemOps.domain(ts).map(_.value)
+              if (!domNames.forall(n => is.exists(_.value == n))) {
+                Left("names in path label system")
+              } else {
+                val freshCheck = is.foldLeft[Either[String, Unit]](Right(())) { (acc, i) =>
+                  acc.flatMap(_ => checkFresh(i)(tenv2))
+                }
+                freshCheck.flatMap { _ =>
+                  val iis = is.map(i => (i, Formula.Atom(i)))
+                  val tenv3 = addSubs(iis, addTele(tele, tenv2))
+                  checkSystemWith(ts, (alpha: Face, talpha: Term) =>
+                    local((te: TEnv) => faceEnv(alpha, te))(check(Val.Closure(t, rho), talpha))
+                  )(tenv3).flatMap { _ =>
+                    val rho2 = tenv3.env
+                    checkCompSystem(Eval.evalSystem(rho2, ts))(tenv3)
+                  }
+                }
+              }
             }
-          case _ => Left(TCError(s"Expected Pi type, got: $fTy"))
-      yield res
+          }
+      })(tenv)
 
-    case Fst(p) =>
-      for
-        pTy <- infer(ctx, p)
-        res <- pTy match
-          case VSigma(a, _) => Right(a)
-          case _            => Left(TCError(s"Expected Sigma type for fst, got: $pTy"))
-      yield res
+    case (VPi(va, f), Term.Split(_, _, ty, ces)) if isSumOrHSum(va) =>
+      val (cas, nu) = extractSumLabels(va)
+      for {
+        _ <- check(VU, ty)(tenv)
+        rho = tenv.env
+        isEq <- convertM(a, Eval.eval(ty, rho))(tenv)
+        _ <- if (!isEq) Left("check: split annotations") else Right(())
+        _ <- if (cas.map(labelName) == ces.map(branchName))
+               sequence_(ces.zip(cas).map { case (brc, lbl) =>
+                 checkBranch((lbl, nu), f, brc, Val.Closure(t, rho), va)
+               })(tenv)
+             else Left("case branches does not match the data type")
+      } yield ()
 
-    case Snd(p) =>
-      for
-        pTy <- infer(ctx, p)
-        res <- pTy match
-          case VSigma(_, b) =>
-            val pV = eval(p, ctx.env)
-            Right(appClosure(b, fstVal(pV)))
-          case _ => Left(TCError(s"Expected Sigma type for snd, got: $pTy"))
-      yield res
+    case (VPi(a2, f), Term.Lam(x, a2Ter, body)) =>
+      for {
+        _ <- check(VU, a2Ter)(tenv)
+        ns = tenv.names
+        rho = tenv.env
+        isEq <- convertM(a2, Eval.eval(a2Ter, rho))(tenv)
+        _ <- if (!isEq) Left(
+          s"check: lam types don't match\nlambda type annotation: $a2Ter\n" +
+          s"domain of Pi: $a2\nnormal form of type: ${Eval.normal(ns, a2)}")
+             else Right(())
+        varVal = Eval.mkVarNice(ns, x, a2)
+        _ <- check(Eval.app(f, varVal), body)(addTypeVal((x, a2), tenv))
+      } yield ()
 
-    case AppFormula(path, phi) =>
-      for
-        pathTy <- infer(ctx, path)
-        res <- pathTy match
-          case VPathP(a, _, _) =>
-            val phiV = evalFormula(phi, ctx.env)
-            Right(appFormula(a, phiV))
-          case _ => Left(TCError(s"Expected PathP type for @, got: $pathTy"))
-      yield res
+    case (VSigma(a2, f), Term.Pair(t1, t2)) =>
+      for {
+        _ <- check(a2, t1)(tenv)
+        v <- evalTyping(t1)(tenv)
+        _ <- check(Eval.app(f, v), t2)(tenv)
+      } yield ()
 
-    case PathP(a, u, v) =>
-      // Check A : I → U, u : A 0, v : A 1
-      val i = freshName(Name("i"), ctx.env.dimSupport)
-      val ctx2 = ctx.withDim(i)
-      for
-        _ <- check(ctx2, a, VUniv)
-        aV = eval(a, ctx.env)
-        a0 = appFormula(aV, FZero)
-        a1 = appFormula(aV, FOne)
-        _ <- check(ctx, u, a0)
-        _ <- check(ctx, v, a1)
-      yield VUniv
+    case (_, Term.Where(e, d)) =>
+      for {
+        _ <- local((te: TEnv) => te.copy(indent = te.indent + 2))(checkDecls(d))(tenv)
+        _ <- local((te: TEnv) => addDecls(d, te))(check(a, e))(tenv)
+      } yield ()
 
-    case Id(a, u, v) =>
-      for
-        _ <- checkTy(ctx, a)
-        aV = eval(a, ctx.env)
-        _ <- check(ctx, u, aV)
-        _ <- check(ctx, v, aV)
-      yield VUniv
+    case (VU, Term.PathP(a2, e0, e1)) =>
+      for {
+        endpoints <- checkPLam(Val.constPath(VU), a2)(tenv)
+        (a0, a1) = endpoints
+        _ <- check(a0, e0)(tenv)
+        _ <- check(a1, e1)(tenv)
+      } yield ()
 
-    case Lam(x, ty, body) =>
-      for
-        _ <- checkTy(ctx, ty)
-        tyV = eval(ty, ctx.env)
-        ctx2 = ctx.withVar(x, tyV)
-        bodyTy <- infer(ctx2, body)
-      yield VPi(tyV, VLam(x, tyV, bodyTy))
+    case (VPathP(p, a0, a1), Term.PLam(_, e)) =>
+      for {
+        endpoints <- checkPLam(p, t)(tenv)
+        (u0, u1) = endpoints
+        ns = tenv.names
+        _ <- if (Eval.convert(ns, a0, u0) && Eval.convert(ns, a1, u1)) Right(())
+             else Left(s"path endpoints don't match for $e, got ($u0, $u1), but expected ($a0, $a1)")
+      } yield ()
 
-    case Where(body, decls) =>
-      val ctx2 = decls match
-        case Decls.MutualDecls(loc, ds) =>
-          // For mutual decls: check each decl then add all
-          ctx.withDecls(loc, ds)
-        case _ => ctx
-      infer(ctx2, body)
+    case (VU, Term.Glue(a2, ts)) =>
+      for {
+        _ <- check(VU, a2)(tenv)
+        rho = tenv.env
+        _ <- checkGlue(Eval.eval(a2, rho), ts)(tenv)
+      } yield ()
+
+    case (VGlue(va2, ts), Term.GlueElem(u, us)) =>
+      for {
+        _ <- check(va2, u)(tenv)
+        vu <- evalTyping(u)(tenv)
+        _ <- checkGlueElem(vu, ts, us)(tenv)
+      } yield ()
+
+    case (VCompU(va2, ves), Term.GlueElem(u, us)) =>
+      for {
+        _ <- check(va2, u)(tenv)
+        vu <- evalTyping(u)(tenv)
+        _ <- checkGlueElemU(vu, ves, us)(tenv)
+      } yield ()
+
+    case (VU, Term.Id(a2, a0, a1)) =>
+      for {
+        _ <- check(VU, a2)(tenv)
+        va <- evalTyping(a2)(tenv)
+        _ <- check(va, a0)(tenv)
+        _ <- check(va, a1)(tenv)
+      } yield ()
+
+    case (VId(va, va0, va1), Term.IdPair(w, ts)) =>
+      for {
+        _ <- check(VPathP(Val.constPath(va), va0, va1), w)(tenv)
+        vw <- evalTyping(w)(tenv)
+        _ <- checkSystemWith(ts, (alpha: Face, tAlpha: Term) =>
+          local((te: TEnv) => faceEnv(alpha, te)) { tenv2 =>
+            for {
+              _ <- check(Nominal.face(va, alpha), tAlpha)(tenv2)
+              vtAlpha <- evalTyping(tAlpha)(tenv2)
+              isEq <- convertM(Nominal.face(vw, alpha), Val.constPath(vtAlpha))(tenv2)
+              _ <- if (!isEq) Left("malformed eqC") else Right(())
+            } yield ()
+          }
+        )(tenv)
+        rho = tenv.env
+        _ <- checkCompSystem(Eval.evalSystem(rho, ts))(tenv)
+      } yield ()
 
     case _ =>
-      Left(TCError(s"Cannot infer type of $t"))
+      for {
+        v <- infer(t)(tenv)
+        isEq <- convertM(v, a)(tenv)
+        _ <- if (!isEq) Left(s"check conv:\n$v\n/=\n$a") else Right(())
+      } yield ()
+  }
 
-  // ── Conversion checking ───────────────────────────────────
+  private def isSumOrHSum(v: Val): Boolean = v match {
+    case Val.Closure(Term.Sum(_, _, _), _) => true
+    case Val.Closure(Term.HSum(_, _, _), _) => true
+    case _ => false
+  }
 
-  def conv(ctx: TCtx, u: Value, v: Value): TCResult[Unit] =
-    if convVal(ctx.names, u, v) then Right(())
-    else Left(TCError(s"Type mismatch:\n  got:      $u\n  expected: $v"))
+  private def extractSumLabels(v: Val): (List[Label], Environment) = v match {
+    case Val.Closure(Term.Sum(_, _, cs), r) => (cs, r)
+    case Val.Closure(Term.HSum(_, _, cs), r) => (cs, r)
+    case _ => (Nil, Environment.empty)
+  }
 
-  def convVal(names: List[Ident], u: Value, v: Value): Boolean =
-    (u, v) match
-      case (VUniv, VUniv) => true
-      case (VPi(a1,b1), VPi(a2,b2)) =>
-        val x = freshIdent("x", names)
-        val xv = mkVar(x, a1)
-        convVal(names, a1, a2) && convVal(x :: names, appClosure(b1, xv), appClosure(b2, xv))
-      case (VSigma(a1,b1), VSigma(a2,b2)) =>
-        val x = freshIdent("x", names)
-        val xv = mkVar(x, a1)
-        convVal(names, a1, a2) && convVal(x :: names, appClosure(b1, xv), appClosure(b2, xv))
-      case (VLam(x,ty,b1), VLam(_,_,b2)) =>
-        val xv = mkVar(x, ty)
-        convVal(x :: names, appClosure(b1, xv), appClosure(b2, xv))
-      case (VLam(x,ty,b), f) =>
-        val xv = mkVar(x, ty)
-        convVal(x :: names, appClosure(b, xv), app(f, xv))
-      case (f, VLam(x,ty,b)) =>
-        val xv = mkVar(x, ty)
-        convVal(x :: names, app(f, xv), appClosure(b, xv))
-      case (VPathP(a1,u1,v1), VPathP(a2,u2,v2)) =>
-        val i = freshName(Name("i"), Set.empty)
-        convVal(names, appFormula(a1, Atom(i)), appFormula(a2, Atom(i))) &&
-        convVal(names, u1, u2) && convVal(names, v1, v2)
-      case (VPLam(i,b1), VPLam(j,b2)) =>
-        convVal(names, b1, actVal(b2, j, Atom(i)))
-      case (VPLam(i,b), p) =>
-        convVal(names, b, appFormula(p, Atom(i)))
-      case (p, VPLam(i,b)) =>
-        convVal(names, appFormula(p, Atom(i)), b)
-      case (VPair(u1,v1), VPair(u2,v2)) =>
-        convVal(names, u1, u2) && convVal(names, v1, v2)
-      case (VPair(u1,v1), p) =>
-        convVal(names, u1, fstVal(p)) && convVal(names, v1, sndVal(p))
-      case (p, VPair(u2,v2)) =>
-        convVal(names, fstVal(p), u2) && convVal(names, sndVal(p), v2)
-      case (VCon(c1,args1), VCon(c2,args2)) =>
-        c1 == c2 && args1.zip(args2).forall((a,b) => convVal(names, a, b))
-      case (Neutral(h1,sp1), Neutral(h2,sp2)) =>
-        convHead(names, h1, h2) && convSpine(names, sp1, sp2)
-      case (VId(a1,u1,v1), VId(a2,u2,v2)) =>
-        convVal(names,a1,a2) && convVal(names,u1,u2) && convVal(names,v1,v2)
-      case _ => false
+  def checkDecls(d: Declarations): Typing[Unit] = tenv => d match {
+    case Declarations.MutualDecls(_, Nil) => Right(())
+    case Declarations.MutualDecls(l, ds) =>
+      val idents = Declarations.declIdents(ds)
+      val tele = Declarations.declTelescope(ds)
+      val ters = Declarations.declTerms(ds)
+      val ind = tenv.indent
+      trace(" " * ind + "Checking: " + idents.mkString(" "))(tenv).flatMap { _ =>
+        checkTele(tele)(tenv).flatMap { _ =>
+          val tenv2 = addDecls(Declarations.MutualDecls(l, ds), tenv)
+          checks(tele, tenv2.env, ters)(tenv2)
+        }
+      }
+    case Declarations.OpaqueDecl(_) => Right(())
+    case Declarations.TransparentDecl(_) => Right(())
+    case Declarations.TransparentAllDecl => Right(())
+  }
 
-  private def convHead(names: List[Ident], h1: Head, h2: Head): Boolean =
-    (h1, h2) match
-      case (Head.HVar(x1,_), Head.HVar(x2,_))           => x1 == x2
-      case (Head.HOpaque(x1,_), Head.HOpaque(x2,_))     => x1 == x2
-      case (Head.HSplit(x1,_,_,_), Head.HSplit(x2,_,_,_)) => x1 == x2
-      case _ => false
+  def checkTele(tele: Telescope): Typing[Unit] = tenv => tele match {
+    case Nil => Right(())
+    case (x, a) :: xas =>
+      check(VU, a)(tenv).flatMap { _ =>
+        checkTele(xas)(addType((x, a), tenv))
+      }
+  }
 
-  private def convSpine(names: List[Ident], sp1: Spine, sp2: Spine): Boolean =
-    sp1.zip(sp2).forall {
-      case (Elim.EApp(a), Elim.EApp(b))                   => convVal(names, a, b)
-      case (Elim.EFst, Elim.EFst)                          => true
-      case (Elim.ESnd, Elim.ESnd)                          => true
-      case (Elim.EAppFormula(p), Elim.EAppFormula(q))      => p == q
-      case _                                               => false
-    } && sp1.length == sp2.length
+  private def checkFam(f: Term): Typing[Unit] = tenv => f match {
+    case Term.Lam(x, a, b) =>
+      check(VU, a)(tenv).flatMap { _ =>
+        check(VU, b)(addType((x, a), tenv))
+      }
+    case x => Left(s"checkFam: $x")
+  }
 
-  // ── Helpers ───────────────────────────────────────────────
+  private def checkCompSystem(vus: System[Val]): Typing[Unit] = tenv => {
+    val ns = tenv.names
+    if (Eval.isCompSystem(ns, vus)) Right(())
+    else Left(s"Incompatible system ${SystemOps.showSystemVal(vus)}")
+  }
 
-  private def appClosure(v: Value, arg: Value): Value = v match
-    case Closure(body, env)  => eval(body, env.updated("_", arg))  // use positional
-    case VLam(x, _, Closure(body, env)) => eval(body, env.updated(x, arg))
-    case VLam(x, _, b)                  => app(b, arg)
-    case _                   => app(v, arg)
+  private def checkSystemsWith[A, B, C](
+    us: System[A],
+    vs: System[B],
+    f: (Face, A, B) => Typing[C]
+  ): Typing[Unit] = tenv => {
+    val common = us.keySet.intersect(vs.keySet)
+    var result: Either[String, Unit] = Right(())
+    val iter = common.iterator
+    while (result.isRight && iter.hasNext) {
+      val key = iter.next()
+      result = f(key, us(key), vs(key))(tenv).map(_ => ())
+    }
+    result
+  }
 
-  private def freshIdent(base: Ident, avoid: List[Ident]): Ident =
-    val avoidSet = avoid.toSet
-    var candidate = base
-    var n = 0
-    while avoidSet.contains(candidate) do
-      n += 1; candidate = s"$base$$$n"
-    candidate
+  private def checkSystemWith[A, B](
+    us: System[A],
+    f: (Face, A) => Typing[B]
+  ): Typing[Unit] = tenv => {
+    var result: Either[String, Unit] = Right(())
+    val iter = us.iterator
+    while (result.isRight && iter.hasNext) {
+      val (key, value) = iter.next()
+      result = f(key, value)(tenv).map(_ => ())
+    }
+    result
+  }
+
+  private def checkGlueElem(vu: Val, ts: System[Val], us: System[Term]): Typing[Unit] = tenv => {
+    if (ts.keySet != us.keySet) {
+      Left(s"Keys don't match in $ts and $us")
+    } else {
+      val rho = tenv.env
+      checkSystemsWith(ts, us, (alpha: Face, vt: Val, u: Term) =>
+        local((te: TEnv) => faceEnv(alpha, te))(check(Eval.equivDom(vt), u))
+      )(tenv).flatMap { _ =>
+        val vus = Eval.evalSystem(rho, us)
+        checkSystemsWith(ts, vus, (alpha: Face, vt: Val, vAlpha: Val) =>
+          unlessM(convertM(Eval.app(Eval.equivFun(vt), vAlpha), Nominal.face(vu, alpha)))(
+            throwError(s"Image of glue component $vAlpha doesn't match $vu")
+          )
+        )(tenv).flatMap { _ =>
+          checkCompSystem(vus)(tenv)
+        }
+      }
+    }
+  }
+
+  private def checkGlueElemU(vu: Val, ves: System[Val], us: System[Term]): Typing[Unit] = tenv => {
+    if (ves.keySet != us.keySet) {
+      Left(s"Keys don't match in $ves and $us")
+    } else {
+      val rho = tenv.env
+      checkSystemsWith(ves, us, (alpha: Face, ve: Val, u: Term) =>
+        local((te: TEnv) => faceEnv(alpha, te))(
+          check(Eval.appFormula(ve, Formula.Dir(Dir.One)), u)
+        )
+      )(tenv).flatMap { _ =>
+        val vus = Eval.evalSystem(rho, us)
+        checkSystemsWith(ves, vus, (alpha: Face, ve: Val, vAlpha: Val) =>
+          unlessM(convertM(Eval.eqFun(ve, vAlpha), Nominal.face(vu, alpha)))(
+            throwError(s"Transport of glueElem (for compU) component $vAlpha doesn't match $vu")
+          )
+        )(tenv).flatMap { _ =>
+          checkCompSystem(vus)(tenv)
+        }
+      }
+    }
+  }
+
+  private def checkGlue(va: Val, ts: System[Term]): Typing[Unit] = tenv => {
+    checkSystemWith(ts, (alpha: Face, tAlpha: Term) =>
+      checkEquiv(Nominal.face(va, alpha), tAlpha)
+    )(tenv).flatMap { _ =>
+      val rho = tenv.env
+      checkCompSystem(Eval.evalSystem(rho, ts))(tenv)
+    }
+  }
+
+  private def mkIso(vb: Val): Val = {
+    val List(a, b, f, g, x, y) = List("a", "b", "f", "g", "x", "y").map(Term.Var(_))
+    val rho = Environment.update(("b", vb), Environment.empty)
+    Eval.eval(
+      Term.Sigma(Term.Lam("a", Term.U,
+        Term.Sigma(Term.Lam("f", Term.Pi(Term.Lam("_", a, b)),
+          Term.Sigma(Term.Lam("g", Term.Pi(Term.Lam("_", b, a)),
+            Term.Sigma(Term.Lam("s", Term.Pi(Term.Lam("y", b,
+              Term.PathP(Term.PLam(Name("_"), b), Term.App(f, Term.App(g, y)), y))),
+              Term.Pi(Term.Lam("x", a,
+                Term.PathP(Term.PLam(Name("_"), a), Term.App(g, Term.App(f, x)), x))))))))))),
+      rho
+    )
+  }
+
+  private def mkEquiv(va: Val): Val = {
+    val List(a, f, x, y, s, t2, z) = List("a", "f", "x", "y", "s", "t", "z").map(Term.Var(_))
+    val rho = Environment.update(("a", va), Environment.empty)
+    val fib = Term.Sigma(Term.Lam("y", t2, Term.PathP(Term.PLam(Name("_"), a), x, Term.App(f, y))))
+    val iscontrfib = Term.Sigma(Term.Lam("s", fib,
+      Term.Pi(Term.Lam("z", fib, Term.PathP(Term.PLam(Name("_"), fib), s, z)))))
+    Eval.eval(
+      Term.Sigma(Term.Lam("t", Term.U,
+        Term.Sigma(Term.Lam("f", Term.Pi(Term.Lam("_", t2, a)),
+          Term.Pi(Term.Lam("x", a, iscontrfib)))))),
+      rho
+    )
+  }
+
+  private def checkEquiv(va: Val, equiv: Term): Typing[Unit] =
+    check(mkEquiv(va), equiv)
+
+  private def checkIso(vb: Val, iso: Term): Typing[Unit] =
+    check(mkIso(vb), iso)
+
+  private def checkBranch(
+    labelEnv: (Label, Environment),
+    f: Val,
+    brc: Branch,
+    g: Val,
+    va: Val
+  ): Typing[Unit] = tenv => (labelEnv._1, brc) match {
+    case (Label.OLabel(_, tele), OBranch(c, ns, e)) =>
+      val nu = labelEnv._2
+      val ns2 = tenv.names
+      val us = mkVars(ns2, tele, nu).map(_._2)
+      check(Eval.app(f, VCon(c, us)), e)(
+        addBranch(ns.zip(us), nu, tenv)
+      )
+
+    case (Label.PLabel(_, tele, is, ts), PBranch(c, ns, js, e)) =>
+      val nu = labelEnv._2
+      val ns2 = tenv.names
+      val us = mkVars(ns2, tele, nu)
+      val vus = us.map(_._2)
+      val js2 = js.map(Formula.Atom(_))
+      val nuUpd = Environment.substituteAll(
+        is.zip(js2),
+        Environment.updateAll(us, nu)
+      )
+      val vts = Eval.evalSystem(nuUpd, ts)
+      val vgts = vts.map { case (alpha, vt) =>
+        alpha -> Eval.app(Nominal.face(g, alpha), vt)
+      }
+      val tenv2 = addSubs(js.map(j => (j, Formula.Atom(j))), addBranch(ns.zip(vus), nu, tenv))
+      check(Eval.app(f, VPCon(c, va, vus, js2)), e)(tenv2).flatMap { _ =>
+        evalTyping(e)(tenv2).flatMap { ve =>
+          val veBorder: System[Val] = Nominal.border(ve, vts)
+          val allMatch = (veBorder.keySet ++ vgts.keySet).forall { k =>
+            (veBorder.get(k), vgts.get(k)) match {
+              case (Some(v1), Some(v2)) => Eval.convert(tenv2.names, v1, v2)
+              case _ => false
+            }
+          }
+          if (!allMatch) Left(
+            s"Faces in branch for $c don't match:\n" +
+            s"got\n${SystemOps.showSystemVal(veBorder)}\nbut expected\n${SystemOps.showSystemVal(vgts)}")
+          else Right(())
+        }
+      }
+
+    case _ => Left(s"checkBranch: mismatched label and branch")
+  }
+
+  private def checkFormula(phi: Formula): Typing[Unit] = tenv => {
+    val rho = tenv.env
+    val dom = Environment.domainEnv(rho)
+    if (Nominal.support(phi).forall(n => dom.contains(n))) Right(())
+    else Left(s"checkFormula: $phi")
+  }
+
+  private def checkFresh(i: Name): Typing[Unit] = tenv => {
+    val rho = tenv.env
+    if (Nominal.support(rho).contains(i))
+      Left(s"$i is already declared")
+    else Right(())
+  }
+
+  private def checkPLam(v: Val, t: Term): Typing[(Val, Val)] = tenv => t match {
+    case Term.PLam(i, a) =>
+      val rho = tenv.env
+      val tenv2 = addSub((i, Formula.Atom(i)), tenv)
+      check(Eval.appFormula(v, Formula.Atom(i)), a)(tenv2).map { _ =>
+        val v0 = Eval.eval(a, Environment.substitute((i, Formula.Dir(Dir.Zero)), rho))
+        val v1 = Eval.eval(a, Environment.substitute((i, Formula.Dir(Dir.One)), rho))
+        (v0, v1)
+      }
+    case _ =>
+      infer(t)(tenv).flatMap { vt =>
+        vt match {
+          case VPathP(a, a0, a1) =>
+            val isEq = Eval.convert(tenv.names, a, v)
+            if (!isEq) Left(s"checkPLam\n$v\n/=\n$a")
+            else Right((a0, a1))
+          case _ => Left(s"$vt is not a path")
+        }
+      }
+  }
+
+  private def checkPLamSystem(t0: Term, va: Val, ps: System[Term]): Typing[System[Val]] = tenv => {
+    val rho = tenv.env
+    var result: Either[String, Map[Face, Val]] = Right(Map.empty)
+    val iter = ps.iterator
+    while (result.isRight && iter.hasNext) {
+      val (alpha, pAlpha) = iter.next()
+      val tenvAlpha = faceEnv(alpha, tenv)
+      val entry = for {
+        endpoints <- checkPLam(Nominal.face(va, alpha), pAlpha)(tenvAlpha)
+        (a0, a1) = endpoints
+        rhoAlpha = tenvAlpha.env
+        isEq <- convertM(a0, Eval.eval(t0, rhoAlpha))(tenvAlpha)
+        _ <- if (!isEq) Left(
+          s"Incompatible system, component\n $pAlpha\n" +
+          s"incompatible with\n $t0\na0 = $a0\nt0alpha = ${Eval.eval(t0, rhoAlpha)}\nva = $va")
+             else Right(())
+      } yield a1
+      result = entry.flatMap(v => result.map(_ + (alpha -> v)))
+    }
+    result.flatMap { v =>
+      checkCompSystem(Eval.evalSystem(rho, ps))(tenv).map(_ => v)
+    }
+  }
+
+  private def checks(tele: Telescope, nu: Environment, es: List[Term]): Typing[Unit] =
+    tenv => (tele, es) match {
+      case (Nil, Nil) => Right(())
+      case ((x, a) :: xas, e :: rest) =>
+        check(Eval.eval(a, nu), e)(tenv).flatMap { _ =>
+          evalTyping(e)(tenv).flatMap { v =>
+            checks(xas, Environment.update((x, v), nu), rest)(tenv)
+          }
+        }
+      case _ => Left("checks: incorrect number of arguments")
+    }
+
+  def infer(e: Term): Typing[Val] = tenv => e match {
+    case Term.U => Right(VU)
+
+    case Term.Var(n) => Right(Eval.lookType(n, tenv.env))
+
+    case Term.App(t, u) =>
+      infer(t)(tenv).flatMap {
+        case VPi(a, f) =>
+          check(a, u)(tenv).flatMap { _ =>
+            evalTyping(u)(tenv).map(v => Eval.app(f, v))
+          }
+        case c => Left(s"$c is not a product")
+      }
+
+    case Term.Fst(t) =>
+      infer(t)(tenv).flatMap {
+        case VSigma(a, _) => Right(a)
+        case c => Left(s"$c is not a sigma-type")
+      }
+
+    case Term.Snd(t) =>
+      infer(t)(tenv).flatMap {
+        case VSigma(_, f) =>
+          evalTyping(t)(tenv).map(v => Eval.app(f, Eval.fstVal(v)))
+        case c => Left(s"$c is not a sigma-type")
+      }
+
+    case Term.Where(t, d) =>
+      checkDecls(d)(tenv).flatMap { _ =>
+        infer(t)(addDecls(d, tenv))
+      }
+
+    case Term.UnGlueElem(e2, _) =>
+      infer(e2)(tenv).flatMap {
+        case VGlue(a, _) => Right(a)
+        case t2 => Left(s"$t2 is not a Glue")
+      }
+
+    case Term.AppFormula(e2, phi) =>
+      checkFormula(phi)(tenv).flatMap { _ =>
+        infer(e2)(tenv).flatMap {
+          case VPathP(a, _, _) => Right(Eval.appFormula(a, phi))
+          case _ => Left(s"$e2 is not a path")
+        }
+      }
+
+    case Term.Comp(a, t0, ps) =>
+      for {
+        endpoints <- checkPLam(Val.constPath(VU), a)(tenv)
+        (va0, va1) = endpoints
+        va <- evalTyping(a)(tenv)
+        _ <- check(va0, t0)(tenv)
+        _ <- checkPLamSystem(t0, va, ps)(tenv)
+      } yield va1
+
+    case Term.HComp(a, u0, us) =>
+      for {
+        _ <- check(VU, a)(tenv)
+        va <- evalTyping(a)(tenv)
+        _ <- check(va, u0)(tenv)
+        _ <- checkPLamSystem(u0, Val.constPath(va), us)(tenv)
+      } yield va
+
+    case Term.Fill(a, t0, ps) =>
+      for {
+        endpoints <- checkPLam(Val.constPath(VU), a)(tenv)
+        (va0, _) = endpoints
+        va <- evalTyping(a)(tenv)
+        _ <- check(va0, t0)(tenv)
+        _ <- checkPLamSystem(t0, va, ps)(tenv)
+        vt <- evalTyping(t0)(tenv)
+        rho = tenv.env
+        vps = Eval.evalSystem(rho, ps)
+      } yield VPathP(va, vt, Eval.compLine(va, vt, vps))
+
+    case Term.PCon(c, a, es, phis) =>
+      for {
+        _ <- check(VU, a)(tenv)
+        va <- evalTyping(a)(tenv)
+        bsNu <- getLblType(c, va)(tenv)
+        (bs, nu) = bsNu
+        _ <- checks(bs, nu, es)(tenv)
+        _ <- sequence_(phis.map(checkFormula))(tenv)
+      } yield va
+
+    case Term.IdJ(a, u, c, d, x, p) =>
+      for {
+        _ <- check(VU, a)(tenv)
+        va <- evalTyping(a)(tenv)
+        _ <- check(va, u)(tenv)
+        vu <- evalTyping(u)(tenv)
+        refu = VIdPair(Val.constPath(vu), SystemOps.mkSystem(List((Face.eps, vu))))
+        rho = tenv.env
+        ctype = Eval.eval(Term.Pi(Term.Lam("z", a, Term.Pi(Term.Lam("_", Term.Id(a, u, Term.Var("z")), Term.U)))), rho)
+        _ <- check(ctype, c)(tenv)
+        vc <- evalTyping(c)(tenv)
+        _ <- check(Eval.app(Eval.app(vc, vu), refu), d)(tenv)
+        _ <- check(va, x)(tenv)
+        vx <- evalTyping(x)(tenv)
+        _ <- check(VId(va, vu, vx), p)(tenv)
+        vp <- evalTyping(p)(tenv)
+      } yield Eval.app(Eval.app(vc, vx), vp)
+
+    case _ => Left(s"infer $e")
+  }
+}

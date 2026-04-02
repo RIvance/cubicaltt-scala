@@ -1,198 +1,247 @@
 package cubical
 
-/** The semantic domain: values after evaluation.
- *
- *  Values are the "meaning" of terms — they represent terms in
- *  weak-head normal form. The key insight from cubical TT is that
- *  values carry a *nominal* structure: they can have free dimension
- *  variables (Names) and need to support substitution along those.
- *
- *  OOP design:
- *  - sealed trait Value with case class variants
- *  - The `Nominal` typeclass is replaced by a method `act` on Value
- *  - Environments are case classes with factory methods
- *  - The "big" eval/comp functions live in Eval.scala
- */
-sealed trait Value:
-  import Value.*
+import scala.collection.immutable.Set
 
-  /** Free dimension variables in this value */
-  def support: Set[Name] = this match
-    case VUniv                          => Set.empty
-    case Neutral(hd, sp)                => hd.support ++ sp.support
-    case VPi(a, b)                      => a.support ++ b.support
-    case VLam(_, a, body)               => a.support ++ body.support
-    case VSigma(a, b)                   => a.support ++ b.support
-    case VPair(u, v)                    => u.support ++ v.support
-    case VCon(_, vs)                    => vs.flatMap(_.support).toSet
-    case VPCon(_, a, vs, phis)          => a.support ++ vs.flatMap(_.support) ++ phis.flatMap(_.support)
-    case VPathP(a, u, v)                => a.support ++ u.support ++ v.support
-    case VPLam(i, v)                    => v.support - i
-    case VComp(a, u, sys)               => a.support ++ u.support ++ sysSupport(sys)
-    case VHComp(a, u, sys)              => a.support ++ u.support ++ sysSupport(sys)
-    case VGlue(a, sys)                  => a.support ++ sysSupport(sys)
-    case VGlueElem(a, sys)              => a.support ++ sysSupport(sys)
-    case VUnGlueElem(a, sys)            => a.support ++ sysSupport(sys)
-    case VCompU(a, sys)                 => a.support ++ sysSupport(sys)
-    case VUnGlueElemU(a, b, es)         => a.support ++ b.support ++ sysSupport(es)
-    case VId(a, u, v)                   => a.support ++ u.support ++ v.support
-    case VIdPair(u, sys)                => u.support ++ sysSupport(sys)
-    case Closure(t, env)                => env.dimSupport
+// ============================================================
+// Values (semantic domain after evaluation)
+// ============================================================
 
-  private def sysSupport(sys: System[Value]): Set[Name] =
-    sys.keys.flatMap(_.keySet).toSet ++ sys.values.flatMap(_.support)
+enum Val {
+  case VU
+  case Closure(term: cubical.Term, env: Environment)
+  case VPi(domain: Val, codomain: Val)
+  case VSigma(fstTy: Val, sndTy: Val)
+  case VPair(fst: Val, snd: Val)
+  case VCon(name: LIdent, args: List[Val])
+  case VPCon(name: LIdent, dataType: Val, args: List[Val], phis: List[Formula])
+  case VPathP(pathTy: Val, left: Val, right: Val)
+  case VPLam(dim: Name, body: Val)
+  case VComp(ty: Val, base: Val, sys: System[Val])
+  case VGlue(base: Val, sys: System[Val])
+  case VGlueElem(base: Val, sys: System[Val])
+  case VUnGlueElem(base: Val, sys: System[Val])
+  case VCompU(base: Val, sys: System[Val])
+  case VHComp(ty: Val, base: Val, sys: System[Val])
+  case VId(ty: Val, left: Val, right: Val)
+  case VIdPair(witness: Val, sys: System[Val])
+  // Neutral values
+  case VVar(name: Ident, ty: Val)
+  case VOpaque(name: Ident, ty: Val)
+  case VFst(pair: Val)
+  case VSnd(pair: Val)
+  case VSplit(fun: Val, arg: Val)
+  case VApp(fun: Val, arg: Val)
+  case VAppFormula(path: Val, phi: Formula)
+  case VLam(name: Ident, domain: Val, body: Val)
+  case VUnGlueElemU(equiv: Val, base: Val, sys: System[Val])
+  case VIdJ(ty: Val, left: Val, mot: Val, refl: Val, right: Val, path: Val)
+}
 
-object Value:
-  // ── Universe ─────────────────────────────────────────────
-  case object VUniv extends Value
+object Val {
+  def isNeutral(v: Val): Boolean = v match {
+    case Closure(cubical.Term.Undef(_, _), _) => true
+    case Closure(cubical.Term.Hole(_), _)     => true
+    case VVar(_, _)            => true
+    case VOpaque(_, _)         => true
+    case VComp(_, _, _)        => true
+    case VFst(_)               => true
+    case VSnd(_)               => true
+    case VSplit(_, _)          => true
+    case VApp(_, _)            => true
+    case VAppFormula(_, _)     => true
+    case VUnGlueElemU(_, _, _) => true
+    case VUnGlueElem(_, _)     => true
+    case VIdJ(_, _, _, _, _, _) => true
+    case _                     => false
+  }
 
-  // ── Neutral values (stuck computations) ──────────────────
-  /** A neutral is a variable (or split) applied to a spine of eliminations.
-   *  We use a separate Head + Spine representation for clarity.
-   */
-  case class Neutral(head: Head, spine: Spine) extends Value
+  def isNeutralSystem(sys: System[Val]): Boolean = {
+    sys.values.exists(isNeutral)
+  }
 
-  // ── Dependent functions ───────────────────────────────────
-  case class VPi(domain: Value, codomain: Value) extends Value
-  /** A semantic lambda: we store the binder name + domain type for readability,
-   *  plus a *closure* (body term + env) as the codomain.
-   */
-  case class VLam(x: Ident, domainTy: Value, body: Value) extends Value
+  def mkVar(k: Int, x: String, ty: Val): Val = {
+    VVar(x + k.toString, ty)
+  }
 
-  // ── Dependent pairs ───────────────────────────────────────
-  case class VSigma(fstTy: Value, sndTy: Value) extends Value
-  case class VPair(fst: Value, snd: Value) extends Value
+  def constPath(v: Val): Val = VPLam(Name("_"), v)
 
-  // ── Data constructors ────────────────────────────────────
-  case class VCon(ctor: Ident, args: List[Value]) extends Value
-  case class VPCon(ctor: Ident, dataType: Value, args: List[Value], phis: List[Formula]) extends Value
-
-  // ── Path types ───────────────────────────────────────────
-  case class VPathP(pathTy: Value, left: Value, right: Value) extends Value
-  case class VPLam(dim: Name, body: Value) extends Value
-
-  // ── Kan operations (stuck) ───────────────────────────────
-  case class VComp(ty: Value, base: Value, sys: System[Value]) extends Value
-  case class VHComp(ty: Value, base: Value, sys: System[Value]) extends Value
-
-  // ── Glue types ───────────────────────────────────────────
-  case class VGlue(base: Value, sys: System[Value]) extends Value
-  case class VGlueElem(base: Value, sys: System[Value]) extends Value
-  case class VUnGlueElem(base: Value, sys: System[Value]) extends Value
-  case class VCompU(base: Value, sys: System[Value]) extends Value
-  case class VUnGlueElemU(equiv: Value, base: Value, es: System[Value]) extends Value
-
-  // ── Identity types ───────────────────────────────────────
-  case class VId(ty: Value, left: Value, right: Value) extends Value
-  case class VIdPair(witness: Value, sys: System[Value]) extends Value
-
-  // ── Closures ─────────────────────────────────────────────
-  /** A term-level closure (unevaluated body with its environment).
-   *  Used to represent the codomain of Pi/Sigma as a function.
-   */
-  case class Closure(body: Term, env: Env) extends Value
-
-/** The "head" of a neutral term */
-enum Head:
-  case HVar(name: Ident, ty: Value)
-  case HOpaque(name: Ident, ty: Value)
-  case HSplit(name: Ident, loc: Loc, ty: Value, branches: List[Branch])
-
-  def support: Set[Name] = this match
-    case HVar(_, ty)          => ty.support
-    case HOpaque(_, ty)       => ty.support
-    case HSplit(_, _, ty, _)  => ty.support
-
-/** The "spine" of a neutral: a list of pending eliminations */
-type Spine = List[Elim]
-extension (sp: Spine)
-  def support: Set[Name] = sp.flatMap(_.support).toSet
-
-/** Eliminations */
-enum Elim:
-  case EApp(arg: Value)
-  case EFst
-  case ESnd
-  case EAppFormula(phi: Formula)
-
-  def support: Set[Name] = this match
-    case EApp(v)          => v.support
-    case EFst | ESnd      => Set.empty
-    case EAppFormula(phi) => phi.support
+  def unCon(v: Val): List[Val] = v match {
+    case VCon(_, vs) => vs
+    case _           => throw new RuntimeException(s"unCon: not a constructor: $v")
+  }
+}
 
 // ============================================================
 // Environments
 // ============================================================
 
-/** The evaluation environment.
- *
- *  In the Haskell original this is a recursive union type (Upd/Def/Sub/Empty).
- *  We represent it as an OOP class hierarchy for clarity.
- *
- *  An Env contains:
- *    - term variable bindings  (Ident → Value)
- *    - dimension substitutions (Name  → Formula)
- *    - opaque set               (Set[Ident])
- */
-sealed abstract class Env:
-  def lookupTerm(x: Ident): Option[Value]
-  def lookupDim(i: Name): Option[Formula]
-  def isOpaque(x: Ident): Boolean
-  def dimSupport: Set[Name]
+// Context shape: tracks the structure of bindings without values
+enum Context {
+  case Empty
+  case Update(name: Ident, parent: Context)
+  case Substitute(dim: Name, parent: Context)
+  case Define(loc: Loc, decls: List[Declaration], parent: Context)
+}
 
-  /** Extend with a term binding */
-  def updated(x: Ident, v: Value): Env = TermEnv(x, v, this)
+// The environment: context shape + parallel lists of values and formulas + opaque set
+//
+// Idents in Context.Update correspond to entries in `vals` (head = most recent)
+// Names in Context.Substitute correspond to entries in `formulas` (head = most recent)
+// The Nameless set tracks opaque identifiers
+case class Environment(
+  ctx: Context,
+  vals: List[Val],
+  formulas: List[Formula],
+  opaques: Nameless[Set[Ident]]
+)
 
-  /** Extend with a dimension substitution */
-  def subst(i: Name, phi: Formula): Env = DimEnv(i, phi, this)
+object Environment {
+  val empty: Environment = Environment(Context.Empty, Nil, Nil, Nameless(Set.empty))
 
-  /** Add a definition group */
-  def withDecls(loc: Loc, decls: List[(Ident, (Term, Term))]): Env =
-    DeclEnv(loc, decls, this)
+  def addDecl(d: Declarations, env: Environment): Environment = d match {
+    case Declarations.MutualDecls(m, ds) =>
+      Environment(
+        Context.Define(m, ds, env.ctx),
+        env.vals,
+        env.formulas,
+        Nameless(env.opaques.value -- Declarations.declIdents(ds).toSet)
+      )
+    case Declarations.OpaqueDecl(n) =>
+      env.copy(opaques = Nameless(env.opaques.value + n))
+    case Declarations.TransparentDecl(n) =>
+      env.copy(opaques = Nameless(env.opaques.value - n))
+    case Declarations.TransparentAllDecl =>
+      env.copy(opaques = Nameless(Set.empty))
+  }
 
-  /** Apply a face substitution to all dimension names in scope */
-  def applyFace(alpha: Face): Env =
-    alpha.foldLeft(this) { case (env, (i, d)) =>
-      val phi = d match
-        case Dir.Zero => Formula.FZero
-        case Dir.One  => Formula.FOne
-      env.subst(i, phi)
+  def addDeclWhere(d: Declarations, env: Environment): Environment = d match {
+    case Declarations.MutualDecls(m, ds) =>
+      Environment(
+        Context.Define(m, ds, env.ctx),
+        env.vals,
+        env.formulas,
+        Nameless(env.opaques.value -- Declarations.declIdents(ds).toSet)
+      )
+    case _ => env
+  }
+
+  def substitute(iphi: (Name, Formula), env: Environment): Environment = {
+    val (i, phi) = iphi
+    Environment(Context.Substitute(i, env.ctx), env.vals, phi :: env.formulas, env.opaques)
+  }
+
+  def update(xv: (Ident, Val), env: Environment): Environment = {
+    val (x, v) = xv
+    Environment(
+      Context.Update(x, env.ctx),
+      v :: env.vals,
+      env.formulas,
+      Nameless(env.opaques.value - x)
+    )
+  }
+
+  def updateAll(xvs: List[(Ident, Val)], env: Environment): Environment = {
+    xvs.foldLeft(env)((e, xv) => update(xv, e))
+  }
+
+  def updateTelescope(tele: Telescope, vs: List[Val], env: Environment): Environment = {
+    updateAll(tele.map(_._1).zip(vs), env)
+  }
+
+  def substituteAll(iphis: List[(Name, Formula)], env: Environment): Environment = {
+    iphis.foldLeft(env)((e, iphi) => substitute(iphi, e))
+  }
+
+  def mapEnv(f: Val => Val, g: Formula => Formula, env: Environment): Environment = {
+    Environment(env.ctx, env.vals.map(f), env.formulas.map(g), env.opaques)
+  }
+
+  def valOfEnv(env: Environment): List[Val] = env.vals
+
+  def formulaOfEnv(env: Environment): List[Formula] = env.formulas
+
+  def domainEnv(env: Environment): List[Name] = {
+    def domCtxt(c: Context): List[Name] = c match {
+      case Context.Empty              => Nil
+      case Context.Update(_, e)       => domCtxt(e)
+      case Context.Define(_, _, e)    => domCtxt(e)
+      case Context.Substitute(i, e)   => i :: domCtxt(e)
     }
+    domCtxt(env.ctx)
+  }
 
-object Env:
-  val empty: Env = EmptyEnv
+  def lookupIdent(x: Ident, env: Environment): Option[Val] = {
+    def go(ctx: Context, vs: List[Val], fs: List[Formula], os: Nameless[Set[Ident]]): Option[Val] = ctx match {
+      case Context.Empty => None
+      case Context.Update(y, parent) =>
+        vs match {
+          case v :: rest =>
+            if (os.value.contains(y)) {
+              if (x == y) {
+                v match {
+                  case Val.VVar(_, ty) => Some(Val.VOpaque(x, ty))
+                  case _               => go(parent, rest, fs, os)
+                }
+              } else {
+                go(parent, rest, fs, os)
+              }
+            } else {
+              if (x == y) Some(v) else go(parent, rest, fs, os)
+            }
+          case Nil => None
+        }
+      case Context.Substitute(_, parent) =>
+        fs match {
+          case _ :: rest => go(parent, vs, rest, os)
+          case Nil       => None
+        }
+      case Context.Define(_, decls, parent) =>
+        Declarations.declDefs(decls).find(_._1 == x) match {
+          case Some((_, body)) =>
+            val defEnv = Environment(ctx, vs, fs, os)
+            Some(Eval.eval(body, defEnv))
+          case None => go(parent, vs, fs, os)
+        }
+    }
+    go(env.ctx, env.vals, env.formulas, env.opaques)
+  }
 
-case object EmptyEnv extends Env:
-  def lookupTerm(x: Ident): Option[Value]   = None
-  def lookupDim(i: Name): Option[Formula]   = None
-  def isOpaque(x: Ident): Boolean           = false
-  def dimSupport: Set[Name]                 = Set.empty
+  def lookupName(i: Name, env: Environment): Formula = {
+    def go(ctx: Context, vs: List[Val], fs: List[Formula]): Formula = ctx match {
+      case Context.Empty => Formula.Atom(i)
+      case Context.Update(_, parent) =>
+        vs match {
+          case _ :: rest => go(parent, rest, fs)
+          case Nil       => Formula.Atom(i)
+        }
+      case Context.Substitute(j, parent) =>
+        fs match {
+          case phi :: rest => if (i == j) phi else go(parent, vs, rest)
+          case Nil         => Formula.Atom(i)
+        }
+      case Context.Define(_, _, parent) => go(parent, vs, fs)
+    }
+    go(env.ctx, env.vals, env.formulas)
+  }
 
-case class TermEnv(x: Ident, v: Value, parent: Env) extends Env:
-  def lookupTerm(y: Ident): Option[Value]   = if y == x then Some(v) else parent.lookupTerm(y)
-  def lookupDim(i: Name): Option[Formula]   = parent.lookupDim(i)
-  def isOpaque(y: Ident): Boolean           = parent.isOpaque(y)
-  def dimSupport: Set[Name]                 = v.support ++ parent.dimSupport
-
-case class DimEnv(i: Name, phi: Formula, parent: Env) extends Env:
-  def lookupTerm(x: Ident): Option[Value]   = parent.lookupTerm(x)
-  def lookupDim(j: Name): Option[Formula]   = if j == i then Some(phi) else parent.lookupDim(j)
-  def isOpaque(x: Ident): Boolean           = parent.isOpaque(x)
-  def dimSupport: Set[Name]                 = phi.support ++ parent.dimSupport
-
-case class DeclEnv(loc: Loc, decls: List[(Ident, (Term, Term))], parent: Env) extends Env:
-  // Lazy: definitions are evaluated on demand
-  def lookupTerm(x: Ident): Option[Value] =
-    decls.collectFirst { case (`x`, (_, body)) =>
-      Eval.eval(body, this)
-    }.orElse(parent.lookupTerm(x))
-  def lookupDim(i: Name): Option[Formula]   = parent.lookupDim(i)
-  def isOpaque(x: Ident): Boolean           = parent.isOpaque(x)
-  def dimSupport: Set[Name]                 = parent.dimSupport
-
-case class OpaqueEnv(names: Set[Ident], parent: Env) extends Env:
-  def lookupTerm(x: Ident): Option[Value] =
-    if names.contains(x) then None else parent.lookupTerm(x)
-  def lookupDim(i: Name): Option[Formula]   = parent.lookupDim(i)
-  def isOpaque(x: Ident): Boolean           = names.contains(x) || parent.isOpaque(x)
-  def dimSupport: Set[Name]                 = parent.dimSupport
+  def contextOfEnv(env: Environment): List[String] = {
+    def go(ctx: Context, vs: List[Val], fs: List[Formula], os: Nameless[Set[Ident]]): List[String] = ctx match {
+      case Context.Empty => Nil
+      case Context.Update(x, parent) =>
+        vs match {
+          case (v @ Val.VVar(n, t)) :: rest =>
+            s"$n : $t" :: go(parent, rest, fs, os)
+          case v :: rest =>
+            s"$x = $v" :: go(parent, rest, fs, os)
+          case Nil => Nil
+        }
+      case Context.Define(_, _, parent) => go(parent, vs, fs, os)
+      case Context.Substitute(i, parent) =>
+        fs match {
+          case phi :: rest => s"$i = $phi" :: go(parent, vs, rest, os)
+          case Nil         => Nil
+        }
+    }
+    go(env.ctx, env.vals, env.formulas, env.opaques)
+  }
+}

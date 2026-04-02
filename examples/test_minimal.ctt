@@ -1,0 +1,7 @@
+module test_minimal where
+
+data bool = false | true
+
+not : bool -> bool = split
+  false -> true
+  true  -> false
