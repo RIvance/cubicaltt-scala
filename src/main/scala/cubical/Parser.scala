@@ -230,7 +230,41 @@ object ResolverEnv {
   val empty: ResolverEnv = ResolverEnv("", Nil)
 }
 
-object Parser extends RegexParsers {
+case class ParsedImports(name: String, imports: List[String])
+
+case class ParsedModule(
+  name: String,
+  imports: List[String],
+  declarations: List[Declarations],
+  names: List[(Ident, SymKind)]
+)
+
+object Parser {
+
+  def parseImports(source: String): Either[String, ParsedImports] = {
+    val parser = new CubicalParser
+    parser.parseImports(source)
+  }
+
+  def parseModule(
+    source: String,
+    moduleName: String = "",
+    existingNames: List[(Ident, SymKind)] = Nil
+  ): Either[String, ParsedModule] = {
+    val parser = new CubicalParser
+    parser.parseModule(source, moduleName, existingNames)
+  }
+
+  def parseExpression(
+    source: String,
+    names: List[(Ident, SymKind)] = Nil
+  ): Either[String, Term] = {
+    val parser = new CubicalParser
+    parser.parseExpression(source, names)
+  }
+}
+
+private[cubical] class CubicalParser extends RegexParsers {
 
   override def skipWhitespace: Boolean = true
   override val whiteSpace = "[ \t\r\n]+".r
@@ -1260,13 +1294,6 @@ object Parser extends RegexParsers {
 
   // ---- Module parser ----
 
-  case class ParsedModule(
-    name: String,
-    imports: List[String],
-    declarations: List[Declarations],
-    names: List[(Ident, SymKind)]
-  )
-
   def imp: Parser[String] = kw("import") ~> ident
 
   private def impOrDecl: Parser[Either[String, RawDecl]] =
@@ -1294,16 +1321,14 @@ object Parser extends RegexParsers {
     }
   }
 
-  // ---- Public API ----
-
-  case class ParsedImports(name: String, imports: List[String])
+  // ---- Instance API (called by companion object) ----
 
   private def moduleImportsParser: Parser[ParsedImports] =
     kw("module") ~> ident ~ (kw("where") ~> literal("{") ~> rep(imp <~ literal(";"))) ^^ {
       case name ~ imps => ParsedImports(name, imps)
     }
 
-  def parseImports(source: String): Either[String, ParsedImports] = {
+  private[cubical] def parseImports(source: String): Either[String, ParsedImports] = {
     val tokens = LayoutPreprocessor.preprocess(source)
     val tokenString = tokens.mkString(" ")
     parse(moduleImportsParser, tokenString) match {
@@ -1313,7 +1338,7 @@ object Parser extends RegexParsers {
     }
   }
 
-  def parseModule(
+  private[cubical] def parseModule(
     source: String,
     moduleName: String = "",
     existingNames: List[(Ident, SymKind)] = Nil
@@ -1329,7 +1354,7 @@ object Parser extends RegexParsers {
     }
   }
 
-  def parseExpression(
+  private[cubical] def parseExpression(
     source: String,
     names: List[(Ident, SymKind)] = Nil
   ): Either[String, Term] = {
