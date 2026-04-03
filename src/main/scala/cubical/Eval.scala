@@ -391,7 +391,7 @@ object Eval {
 
   // ── Composition and filling ──────────────────────────────
 
-  def comp(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def comp(i: Name, ty: Type, u: Val, faceVals: System[Val]): Val = {
     if (faceVals.contains(Face.eps)) {
       Nominal.face(faceVals(Face.eps), Face.dir(i, Dir.One))
     } else ty match {
@@ -453,17 +453,17 @@ object Eval {
     }
   }
 
-  def compNeg(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def compNeg(i: Name, ty: Type, u: Val, faceVals: System[Val]): Val = {
     comp(i, Nominal.sym(ty, i), u, Nominal.sym(faceVals, i))
   }
 
-  def compLine(ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def compLine(ty: Type, u: Val, faceVals: System[Val]): Val = {
     val i = Nominal.fresh((ty, u, faceVals))
     comp(i, appFormula(ty, Formula.Atom(i)), u,
       faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) })
   }
 
-  def compConstLine(ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def compConstLine(ty: Type, u: Val, faceVals: System[Val]): Val = {
     val i = Nominal.fresh((ty, u, faceVals))
     comp(i, ty, u,
       faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) })
@@ -481,18 +481,18 @@ object Eval {
     }
   }
 
-  def fill(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def fill(i: Name, ty: Type, u: Val, faceVals: System[Val]): Val = {
     val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
     comp(j, Nominal.conj(ty, (i, j)), u,
       SystemOps.insertSystem(Face.dir(i, Dir.Zero), u,
         Nominal.conj(faceVals, (i, j))))
   }
 
-  def fillNeg(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def fillNeg(i: Name, ty: Type, u: Val, faceVals: System[Val]): Val = {
     Nominal.sym(fill(i, Nominal.sym(ty, i), u, Nominal.sym(faceVals, i)), i)
   }
 
-  def fillLine(ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def fillLine(ty: Type, u: Val, faceVals: System[Val]): Val = {
     val i = Nominal.fresh((ty, u, faceVals))
     VPLam(i, fill(i, appFormula(ty, Formula.Atom(i)), u,
       faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) }))
@@ -502,7 +502,7 @@ object Eval {
 
   def trans(i: Name, v0: Val, v1: Val): Val = comp(i, v0, v1, Map.empty)
 
-  def transNeg(i: Name, ty: Val, u: Val): Val = trans(i, Nominal.sym(ty, i), u)
+  def transNeg(i: Name, ty: Type, u: Val): Val = trans(i, Nominal.sym(ty, i), u)
 
   def transLine(u: Val, v: Val): Val = {
     val i = Nominal.fresh((u, v))
@@ -526,13 +526,13 @@ object Eval {
     }
   }
 
-  def transFill(i: Name, ty: Val, u: Val): Val = fill(i, ty, u, Map.empty)
+  def transFill(i: Name, ty: Type, u: Val): Val = fill(i, ty, u, Map.empty)
 
-  def transFillNeg(i: Name, ty: Val, u: Val): Val = {
+  def transFillNeg(i: Name, ty: Type, u: Val): Val = {
     Nominal.sym(transFill(i, Nominal.sym(ty, i), u), i)
   }
 
-  def squeeze(i: Name, ty: Val, u: Val): Val = {
+  def squeeze(i: Name, ty: Type, u: Val): Val = {
     val j = Nominal.fresh((Formula.Atom(i), ty, u))
     val ui1 = Nominal.face(u, Face.dir(i, Dir.One))
     comp(j, Nominal.disj(ty, (i, j)), u,
@@ -598,7 +598,7 @@ object Eval {
     case _ => VPCon(c, a, us, phis)
   }
 
-  def compHIT(i: Name, sumType: Val, u: Val, faceVals: System[Val]): Val = {
+  def compHIT(i: Name, sumType: Type, u: Val, faceVals: System[Val]): Val = {
     if (Val.isNeutral(u) || Val.isNeutralSystem(faceVals)) {
       VComp(VPLam(i, sumType), u, faceVals.map { case (alpha, uAlpha) => alpha -> VPLam(i, uAlpha) })
     } else {
@@ -611,7 +611,7 @@ object Eval {
     }
   }
 
-  def transpHIT(i: Name, sumType: Val, u: Val): Val = sumType match {
+  def transpHIT(i: Name, sumType: Type, u: Val): Val = sumType match {
     case Closure(Term.HSum(_, _, sumLabels), env) =>
       u match {
         case VCon(n, us) =>
@@ -640,7 +640,7 @@ object Eval {
     case _ => throw EvalError(s"transpHIT: not an HSum $sumType")
   }
 
-  def squeezeHIT(i: Name, sumType: Val, u: Val): Val = sumType match {
+  def squeezeHIT(i: Name, sumType: Type, u: Val): Val = sumType match {
     case Closure(Term.HSum(_, _, sumLabels), env) =>
       u match {
         case VCon(n, us) =>
@@ -675,18 +675,18 @@ object Eval {
     case _ => throw EvalError(s"squeezeHIT: not an HSum $sumType")
   }
 
-  def hComp(ty: Val, u: Val, faceVals: System[Val]): Val = {
+  def hComp(ty: Type, u: Val, faceVals: System[Val]): Val = {
     if (faceVals.contains(Face.eps)) appFormula(faceVals(Face.eps), Formula.Dir(Dir.One))
     else VHComp(ty, u, faceVals)
   }
 
   // ── Glue ─────────────────────────────────────────────────
 
-  def equivDom(v: Val): Val = fstVal(v)
+  def equivDom(v: Val): Type = fstVal(v)
   def equivFun(v: Val): Val = fstVal(sndVal(v))
   def equivContr(v: Val): Val = sndVal(sndVal(v))
 
-  def glue(baseType: Val, faceVals: System[Val]): Val = {
+  def glue(baseType: Type, faceVals: System[Val]): Val = {
     if (faceVals.contains(Face.eps)) equivDom(faceVals(Face.eps))
     else VGlue(baseType, faceVals)
   }
@@ -704,7 +704,7 @@ object Eval {
     }
   }
 
-  def unGlue(w: Val, baseType: Val, equivs: System[Val]): Val = {
+  def unGlue(w: Val, baseType: Type, equivs: System[Val]): Val = {
     if (equivs.contains(Face.eps)) app(equivFun(equivs(Face.eps)), w)
     else w match {
       case VGlueElem(v, _) => v
@@ -728,7 +728,7 @@ object Eval {
     }
   }
 
-  def extend(baseType: Val, equivPair: Val, fiberSections: System[Val]): Val = {
+  def extend(baseType: Type, equivPair: Val, fiberSections: System[Val]): Val = {
     val i = Nominal.fresh((baseType, equivPair, fiberSections))
     val ts2 = fiberSections.map { case (alpha, tAlpha) =>
       alpha -> appFormula(app(Nominal.face(sndVal(equivPair), alpha), tAlpha), Formula.Atom(i))
@@ -736,7 +736,7 @@ object Eval {
     comp(i, baseType, fstVal(equivPair), ts2)
   }
 
-  def compGlue(i: Name, baseType: Val, equivs: System[Val], baseAtI0: Val, faceVals: System[Val]): Val = {
+  def compGlue(i: Name, baseType: Type, equivs: System[Val], baseAtI0: Val, faceVals: System[Val]): Val = {
     val ai1 = Nominal.face(baseType, Face.dir(i, Dir.One))
     val ungluedValuesSystem = faceVals.map { case (alpha, wAlpha) =>
       alpha -> unGlue(wAlpha, Nominal.face(baseType, alpha), Nominal.face(equivs, alpha))
@@ -790,7 +790,7 @@ object Eval {
     glueElem(composedValueAtI1, glueElemsAtI1)
   }
 
-  def mkFiberType(baseType: Val, center: Val, equiv: Val): Val = {
+  def mkFiberType(baseType: Type, center: Val, equiv: Val): Type = {
     val ta = Term.Var("a")
     val tx = Term.Var("x")
     val ty = Term.Var("y")
@@ -802,7 +802,7 @@ object Eval {
     eval(Term.Sigma(Term.Lam("y", tt, Term.PathP(Term.PLam(Name("_"), ta), tx, Term.App(tf, ty)))), env)
   }
 
-  def pathComp(i: Name, ty: Val, baseVal: Val, endVal: Val, faceVals: System[Val]): Val = {
+  def pathComp(i: Name, ty: Type, baseVal: Val, endVal: Val, faceVals: System[Val]): Val = {
     val j = Nominal.fresh((Formula.Atom(i), ty, faceVals, baseVal, endVal))
     VPLam(j, comp(i, ty, baseVal,
       SystemOps.insertsSystem(List((Face.dir(j, Dir.One), endVal)), faceVals)))
@@ -812,7 +812,7 @@ object Eval {
 
   def eqFun(equivPath: Val, value: Val): Val = transNegLine(equivPath, value)
 
-  def unGlueU(w: Val, baseType: Val, equivPaths: System[Val]): Val = {
+  def unGlueU(w: Val, baseType: Type, equivPaths: System[Val]): Val = {
     if (equivPaths.contains(Face.eps)) eqFun(equivPaths(Face.eps), w)
     else w match {
       case VGlueElem(v, _) => v
@@ -820,12 +820,12 @@ object Eval {
     }
   }
 
-  def compUniv(baseType: Val, equivPaths: System[Val]): Val = {
+  def compUniv(baseType: Type, equivPaths: System[Val]): Val = {
     if (equivPaths.contains(Face.eps)) appFormula(equivPaths(Face.eps), Formula.Dir(Dir.One))
     else VCompU(baseType, equivPaths)
   }
 
-  def compU(i: Name, baseType: Val, equivs: System[Val], baseAtI0: Val, faceVals: System[Val]): Val = {
+  def compU(i: Name, baseType: Type, equivs: System[Val], baseAtI0: Val, faceVals: System[Val]): Val = {
     val ai1 = Nominal.face(baseType, Face.dir(i, Dir.One))
     val ungluedValuesSystem = faceVals.map { case (alpha, wAlpha) =>
       alpha -> unGlueU(wAlpha, Nominal.face(baseType, alpha), Nominal.face(equivs, alpha))
@@ -1086,7 +1086,7 @@ object Eval {
 
   // ── Helpers ──────────────────────────────────────────────
 
-  def mkVarNice(ns: List[String], x: String, ty: Val): Val = {
+  def mkVarNice(ns: List[String], x: String, ty: Type): Val = {
     val candidateNames = x #:: LazyList.from(0).map(n => x + n.toString)
     val name = candidateNames.find(y => !ns.contains(y)).get
     VVar(name, ty)

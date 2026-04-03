@@ -346,7 +346,7 @@ object TypeChecker {
     checkCompSystem(evaledElems, typeEnv)
   }
 
-  private def checkGlue(valA: Val, equivTerms: System[Term], typeEnv: TypeEnv): Unit = {
+  private def checkGlue(valA: Type, equivTerms: System[Term], typeEnv: TypeEnv): Unit = {
     checkSystemWith(equivTerms, (alpha: Face, tAlpha: Term) =>
       checkEquiv(Nominal.face(valA, alpha), tAlpha, typeEnv)
     , typeEnv)
@@ -354,7 +354,7 @@ object TypeChecker {
     checkCompSystem(Eval.evalSystem(rho, equivTerms), typeEnv)
   }
 
-  private def mkIso(vb: Val): Val = {
+  private def mkIso(vb: Type): Type = {
     val List(a, b, f, g, x, y) = List("a", "b", "f", "g", "x", "y").map(Term.Var(_))
     val rho = Environment.update(("b", vb), Environment.empty)
     Eval.eval(
@@ -369,7 +369,7 @@ object TypeChecker {
     )
   }
 
-  private def mkEquiv(valA: Val): Val = {
+  private def mkEquiv(valA: Type): Type = {
     val List(a, f, x, y, s, typeVar, z) = List("a", "f", "x", "y", "s", "t", "z").map(Term.Var(_))
     val rho = Environment.update(("a", valA), Environment.empty)
     val fiberType = Term.Sigma(Term.Lam("y", typeVar, Term.PathP(Term.PLam(Name("_"), a), x, Term.App(f, y))))
@@ -383,10 +383,10 @@ object TypeChecker {
     )
   }
 
-  private def checkEquiv(valA: Val, equiv: Term, typeEnv: TypeEnv): Unit =
+  private def checkEquiv(valA: Type, equiv: Term, typeEnv: TypeEnv): Unit =
     check(mkEquiv(valA), equiv, typeEnv)
 
-  private def checkIso(vb: Val, iso: Term, typeEnv: TypeEnv): Unit =
+  private def checkIso(vb: Type, iso: Term, typeEnv: TypeEnv): Unit =
     check(mkIso(vb), iso, typeEnv)
 
   private def checkBranch(
@@ -394,7 +394,7 @@ object TypeChecker {
     codomain: Val,
     branch: Branch,
     splitClosure: Val,
-    valA: Val,
+    valA: Type,
     typeEnv: TypeEnv
   ): Unit = (labelEnv._1, branch) match {
     case (Label.OrdinaryLabel(_, tele), OrdinaryBranch(c, ns, e)) =>
@@ -467,7 +467,7 @@ object TypeChecker {
       }
   }
 
-  private def checkPLamSystem(t0: Term, valA: Val, ps: System[Term], typeEnv: TypeEnv): System[Val] = {
+  private def checkPLamSystem(t0: Term, valA: Type, ps: System[Term], typeEnv: TypeEnv): System[Val] = {
     val rho = typeEnv.env
     val result = ps.map { case (alpha, pathAtFace) =>
       val typeEnvAtFace = faceEnv(alpha, typeEnv)

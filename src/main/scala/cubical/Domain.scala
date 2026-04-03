@@ -9,32 +9,32 @@ import scala.collection.immutable.Set
 enum Val {
   case VU
   case Closure(term: cubical.Term, env: Environment)
-  case VPi(domain: Val, codomain: Val)
-  case VSigma(fstTy: Val, sndTy: Val)
+  case VPi(domain: Type, codomain: Type)
+  case VSigma(fstTy: Type, sndTy: Type)
   case VPair(fst: Val, snd: Val)
   case VCon(name: LabelIdent, args: List[Val])
-  case VPCon(name: LabelIdent, dataType: Val, args: List[Val], phis: List[Formula])
-  case VPathP(pathTy: Val, left: Val, right: Val)
+  case VPCon(name: LabelIdent, dataType: Type, args: List[Val], phis: List[Formula])
+  case VPathP(pathTy: Type, left: Val, right: Val)
   case VPLam(dim: Name, body: Val)
-  case VComp(ty: Val, base: Val, sys: System[Val])
-  case VGlue(base: Val, sys: System[Val])
+  case VComp(ty: Type, base: Val, sys: System[Val])
+  case VGlue(base: Type, sys: System[Val])
   case VGlueElem(base: Val, sys: System[Val])
   case VUnGlueElem(base: Val, sys: System[Val])
-  case VCompU(base: Val, sys: System[Val])
-  case VHComp(ty: Val, base: Val, sys: System[Val])
-  case VId(ty: Val, left: Val, right: Val)
+  case VCompU(base: Type, sys: System[Val])
+  case VHComp(ty: Type, base: Val, sys: System[Val])
+  case VId(ty: Type, left: Val, right: Val)
   case VIdPair(witness: Val, sys: System[Val])
   // Neutral values
-  case VVar(name: Ident, ty: Val)
-  case VOpaque(name: Ident, ty: Val)
+  case VVar(name: Ident, ty: Type)
+  case VOpaque(name: Ident, ty: Type)
   case VFst(pair: Val)
   case VSnd(pair: Val)
   case VSplit(fun: Val, arg: Val)
   case VApp(fun: Val, arg: Val)
   case VAppFormula(path: Val, phi: Formula)
-  case VLam(name: Ident, domain: Val, body: Val)
-  case VUnGlueElemU(equiv: Val, base: Val, sys: System[Val])
-  case VIdJ(ty: Val, left: Val, mot: Val, refl: Val, right: Val, path: Val)
+  case VLam(name: Ident, domain: Type, body: Val)
+  case VUnGlueElemU(equiv: Val, base: Type, sys: System[Val])
+  case VIdJ(ty: Type, left: Val, mot: Val, refl: Val, right: Val, path: Val)
 }
 
 type Type = Val
@@ -61,7 +61,7 @@ object Val {
     sys.values.exists(isNeutral)
   }
 
-  def mkVar(counter: Int, varName: String, ty: Val): Val = {
+  def mkVar(counter: Int, varName: String, ty: Type): Val = {
     VVar(varName + counter.toString, ty)
   }
 
