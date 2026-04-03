@@ -979,8 +979,8 @@ private[cubical] class CubicalParser extends RegexParsers {
   }
 
   private def resolveArgs(args: List[Term]): Either[String, List[Term]] =
-    args.foldRight(Right(Nil): Either[String, List[Term]]) { (a, acc) =>
-      for { as <- acc; ra <- resolveTerm(a) } yield ra :: as
+    args.foldRight(Right(Nil): Either[String, List[Term]]) { (arg, acc) =>
+      for { resolvedSoFar <- acc; resolvedArg <- resolveTerm(arg) } yield resolvedArg :: resolvedSoFar
     }
 
   private def unAppsFormulas(t: Term): (Term, List[Term], List[Formula]) = {
@@ -1110,7 +1110,7 @@ private[cubical] class CubicalParser extends RegexParsers {
 
   private def resolveFormulas(phis: List[Formula]): Either[String, List[Formula]] =
     phis.foldRight(Right(Nil): Either[String, List[Formula]]) { (phi, acc) =>
-      for { as <- acc; rPhi <- resolveFormula(phi) } yield rPhi :: as
+      for { resolvedSoFar <- acc; rPhi <- resolveFormula(phi) } yield rPhi :: resolvedSoFar
     }
 
   private def resolveSystemTerm(sys: System[Term]): Either[String, System[Term]] = {
@@ -1138,8 +1138,8 @@ private[cubical] class CubicalParser extends RegexParsers {
   }
 
   private def resolveBranches(branches: List[Branch]): Either[String, List[Branch]] =
-    branches.foldRight(Right(Nil): Either[String, List[Branch]]) { (b, acc) =>
-      for { bs <- acc; rb <- resolveBranch(b) } yield rb :: bs
+    branches.foldRight(Right(Nil): Either[String, List[Branch]]) { (branch, acc) =>
+      for { resolvedSoFar <- acc; resolvedBranch <- resolveBranch(branch) } yield resolvedBranch :: resolvedSoFar
     }
 
   private def resolveBranch(b: Branch): Either[String, Branch] = b match {
@@ -1151,8 +1151,8 @@ private[cubical] class CubicalParser extends RegexParsers {
   }
 
   private def resolveLabels(labels: List[Label]): Either[String, List[Label]] =
-    labels.foldRight(Right(Nil): Either[String, List[Label]]) { (l, acc) =>
-      for { ls <- acc; rl <- resolveLabel(l) } yield rl :: ls
+    labels.foldRight(Right(Nil): Either[String, List[Label]]) { (label, acc) =>
+      for { resolvedSoFar <- acc; resolvedLabel <- resolveLabel(label) } yield resolvedLabel :: resolvedSoFar
     }
 
   private def resolveLabel(l: Label): Either[String, Label] = l match {
@@ -1297,7 +1297,7 @@ private[cubical] class CubicalParser extends RegexParsers {
   def imp: Parser[String] = kw("import") ~> ident
 
   private def impOrDecl: Parser[Either[String, RawDecl]] =
-    imp ^^ { i => Left(i) } | rawDecl ^^ { d => Right(d) }
+    imp ^^ { importName => Left(importName) } | rawDecl ^^ { rawDeclItem => Right(rawDeclItem) }
 
   def moduleParser: Parser[ParsedModule] =
     kw("module") ~> ident ~ (kw("where") ~> literal("{") ~> impsAndDeclsBlock <~ literal("}")) ^^ {

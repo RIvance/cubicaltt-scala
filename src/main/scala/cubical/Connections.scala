@@ -49,10 +49,10 @@ enum Dir {
 }
 
 object Dir {
-  def fromInt(n: Int): Dir = n match {
+  def fromInt(intValue: Int): Dir = intValue match {
     case 0 => Zero
     case 1 => One
-    case _ => throw new IllegalArgumentException(s"Dir.fromInt: $n")
+    case _ => throw new IllegalArgumentException(s"Dir.fromInt: $intValue")
   }
 }
 
@@ -82,18 +82,18 @@ object Face {
     }
   }
 
-  def compatibles(fs: List[Face]): Boolean = fs match {
+  def compatibles(faces: List[Face]): Boolean = faces match {
     case Nil     => true
     case x :: xs => xs.forall(compatible(x, _)) && compatibles(xs)
   }
 
-  def meet(x: Face, y: Face): Face = {
-    if (!compatible(x, y)) throw new RuntimeException(s"meet: incompatible faces")
-    x ++ y
+  def meet(left: Face, right: Face): Face = {
+    if (!compatible(left, right)) throw new RuntimeException(s"meet: incompatible faces")
+    left ++ right
   }
 
-  def meetMaybe(x: Face, y: Face): Option[Face] = {
-    if (compatible(x, y)) Some(x ++ y) else None
+  def meetMaybe(left: Face, right: Face): Option[Face] = {
+    if (compatible(left, right)) Some(left ++ right) else None
   }
 
   def meets(xs: List[Face], ys: List[Face]): List[Face] = {
@@ -104,8 +104,8 @@ object Face {
     } yield meet(x, y)).distinct
   }
 
-  def meetss(xss: List[List[Face]]): List[Face] = {
-    xss.foldRight(List(eps))(meets)
+  def meetss(faceLists: List[List[Face]]): List[Face] = {
+    faceLists.foldRight(List(eps))(meets)
   }
 
   def leq(alpha: Face, beta: Face): Boolean = {
@@ -233,17 +233,17 @@ object Formula {
 // ============================================================
 
 trait Nominal[A] {
-  def support(a: A): List[Name]
-  def act(a: A, sub: (Name, Formula)): A
-  def swap(a: A, names: (Name, Name)): A
+  def support(value: A): List[Name]
+  def act(value: A, sub: (Name, Formula)): A
+  def swap(value: A, names: (Name, Name)): A
 }
 
 object Nominal {
   def apply[A](using n: Nominal[A]): Nominal[A] = n
 
-  def support[A: Nominal](a: A): List[Name] = Nominal[A].support(a)
-  def act[A: Nominal](a: A, sub: (Name, Formula)): A = Nominal[A].act(a, sub)
-  def swap[A: Nominal](a: A, names: (Name, Name)): A = Nominal[A].swap(a, names)
+  def support[A: Nominal](value: A): List[Name] = Nominal[A].support(value)
+  def act[A: Nominal](value: A, sub: (Name, Formula)): A = Nominal[A].act(value, sub)
+  def swap[A: Nominal](value: A, names: (Name, Name)): A = Nominal[A].swap(value, names)
 
   // Fresh name generation
   def gensym(xs: List[Name]): Name = {
@@ -260,73 +260,73 @@ object Nominal {
     x #:: gensyms(x :: d)
   }
 
-  def fresh[A: Nominal](a: A): Name = gensym(support(a))
+  def fresh[A: Nominal](value: A): Name = gensym(support(value))
 
-  def freshs[A: Nominal](a: A): LazyList[Name] = gensyms(support(a))
+  def freshs[A: Nominal](value: A): LazyList[Name] = gensyms(support(value))
 
   // Apply a face substitution: fold over face entries applying Dir substitutions
-  def face[A: Nominal](a: A, alpha: Face): A = {
-    alpha.foldLeft(a) { case (acc, (i, d)) =>
+  def face[A: Nominal](value: A, alpha: Face): A = {
+    alpha.foldLeft(value) { case (acc, (i, d)) =>
       act(acc, (i, Formula.Dir(d)))
     }
   }
 
   // Carve a value using the shape of a system
-  def border[A: Nominal](v: A, sys: System[?]): System[A] = {
-    sys.map { case (f, _) => f -> face(v, f) }
+  def border[A: Nominal](value: A, sys: System[?]): System[A] = {
+    sys.map { case (f, _) => f -> face(value, f) }
   }
 
   // Symmetry: a{i ↦ -i}
-  def sym[A: Nominal](a: A, i: Name): A = {
-    act(a, (i, Formula.NegAtom(i)))
+  def sym[A: Nominal](value: A, i: Name): A = {
+    act(value, (i, Formula.NegAtom(i)))
   }
 
   // Rename: a{i ↦ j}
-  def rename[A: Nominal](a: A, ij: (Name, Name)): A = {
+  def rename[A: Nominal](value: A, ij: (Name, Name)): A = {
     val (i, j) = ij
-    act(a, (i, Formula.Atom(j)))
+    act(value, (i, Formula.Atom(j)))
   }
 
   // Conjunction: a{i ↦ i ∧ j}
-  def conj[A: Nominal](a: A, ij: (Name, Name)): A = {
+  def conj[A: Nominal](value: A, ij: (Name, Name)): A = {
     val (i, j) = ij
-    act(a, (i, Formula.And(Formula.Atom(i), Formula.Atom(j))))
+    act(value, (i, Formula.And(Formula.Atom(i), Formula.Atom(j))))
   }
 
   // Disjunction: a{i ↦ i ∨ j}
-  def disj[A: Nominal](a: A, ij: (Name, Name)): A = {
+  def disj[A: Nominal](value: A, ij: (Name, Name)): A = {
     val (i, j) = ij
-    act(a, (i, Formula.Or(Formula.Atom(i), Formula.Atom(j))))
+    act(value, (i, Formula.Or(Formula.Atom(i), Formula.Atom(j))))
   }
 
   // ── Helper ──
-  def unions[A](xss: List[List[A]]): List[A] = {
-    xss.foldRight(List.empty[A]) { (xs, acc) => (xs ++ acc).distinct }
+  def unions[A](lists: List[List[A]]): List[A] = {
+    lists.foldRight(List.empty[A]) { (xs, acc) => (xs ++ acc).distinct }
   }
 
-  def unionsMap[A, B](f: A => List[B], xs: List[A]): List[B] = {
-    unions(xs.map(f))
+  def unionsMap[A, B](fn: A => List[B], items: List[A]): List[B] = {
+    unions(items.map(fn))
   }
 
   // ── Instances ──────────────────────────────────────────────
 
   given Nominal[Unit] with {
-    def support(a: Unit): List[Name] = Nil
-    def act(a: Unit, sub: (Name, Formula)): Unit = ()
-    def swap(a: Unit, names: (Name, Name)): Unit = ()
+    def support(unit: Unit): List[Name] = Nil
+    def act(unit: Unit, sub: (Name, Formula)): Unit = ()
+    def swap(unit: Unit, names: (Name, Name)): Unit = ()
   }
 
   given Nominal[Name] with {
-    def support(a: Name): List[Name] = List(a)
-    def act(a: Name, sub: (Name, Formula)): Name = a
-    def swap(a: Name, names: (Name, Name)): Name = {
+    def support(name: Name): List[Name] = List(name)
+    def act(name: Name, sub: (Name, Formula)): Name = name
+    def swap(name: Name, names: (Name, Name)): Name = {
       val (i, j) = names
-      Name.swapName(a, i, j)
+      Name.swapName(name, i, j)
     }
   }
 
   given Nominal[Formula] with {
-    def support(a: Formula): List[Name] = a match {
+    def support(formula: Formula): List[Name] = formula match {
       case Formula.Dir(_)        => Nil
       case Formula.Atom(i)       => List(i)
       case Formula.NegAtom(i)    => List(i)
@@ -334,9 +334,9 @@ object Nominal {
       case Formula.Or(phi, psi)  => (support(phi) ++ support(psi)).distinct
     }
 
-    def act(a: Formula, sub: (Name, Formula)): Formula = {
+    def act(formula: Formula, sub: (Name, Formula)): Formula = {
       val (i, phi) = sub
-      a match {
+      formula match {
         case Formula.Dir(b)     => Formula.Dir(b)
         case Formula.Atom(j)    => if (i == j) phi else Formula.Atom(j)
         case Formula.NegAtom(j) => if (i == j) Formula.negFormula(phi) else Formula.NegAtom(j)
@@ -345,9 +345,9 @@ object Nominal {
       }
     }
 
-    def swap(a: Formula, names: (Name, Name)): Formula = {
+    def swap(formula: Formula, names: (Name, Name)): Formula = {
       val (i, j) = names
-      a match {
+      formula match {
         case Formula.Dir(b)     => Formula.Dir(b)
         case Formula.Atom(k)    =>
           if (k == i) Formula.Atom(j)
@@ -364,87 +364,87 @@ object Nominal {
   }
 
   given nominalList[A](using na: Nominal[A]): Nominal[List[A]] with {
-    def support(a: List[A]): List[Name] = unions(a.map(na.support))
-    def act(a: List[A], sub: (Name, Formula)): List[A] = a.map(na.act(_, sub))
-    def swap(a: List[A], names: (Name, Name)): List[A] = a.map(na.swap(_, names))
+    def support(list: List[A]): List[Name] = unions(list.map(na.support))
+    def act(list: List[A], sub: (Name, Formula)): List[A] = list.map(na.act(_, sub))
+    def swap(list: List[A], names: (Name, Name)): List[A] = list.map(na.swap(_, names))
   }
 
   given nominalOption[A](using na: Nominal[A]): Nominal[Option[A]] with {
-    def support(a: Option[A]): List[Name] = a.map(na.support).getOrElse(Nil)
-    def act(a: Option[A], sub: (Name, Formula)): Option[A] = a.map(na.act(_, sub))
-    def swap(a: Option[A], names: (Name, Name)): Option[A] = a.map(na.swap(_, names))
+    def support(opt: Option[A]): List[Name] = opt.map(na.support).getOrElse(Nil)
+    def act(opt: Option[A], sub: (Name, Formula)): Option[A] = opt.map(na.act(_, sub))
+    def swap(opt: Option[A], names: (Name, Name)): Option[A] = opt.map(na.swap(_, names))
   }
 
   given nominalPair[A, B](using na: Nominal[A], nb: Nominal[B]): Nominal[(A, B)] with {
-    def support(a: (A, B)): List[Name] = (na.support(a._1) ++ nb.support(a._2)).distinct
-    def act(a: (A, B), sub: (Name, Formula)): (A, B) = (na.act(a._1, sub), nb.act(a._2, sub))
-    def swap(a: (A, B), names: (Name, Name)): (A, B) = (na.swap(a._1, names), nb.swap(a._2, names))
+    def support(pair: (A, B)): List[Name] = (na.support(pair._1) ++ nb.support(pair._2)).distinct
+    def act(pair: (A, B), sub: (Name, Formula)): (A, B) = (na.act(pair._1, sub), nb.act(pair._2, sub))
+    def swap(pair: (A, B), names: (Name, Name)): (A, B) = (na.swap(pair._1, names), nb.swap(pair._2, names))
   }
 
   given nominalTriple[A, B, C](using na: Nominal[A], nb: Nominal[B], nc: Nominal[C]): Nominal[(A, B, C)] with {
-    def support(a: (A, B, C)): List[Name] = {
-      unions(List(na.support(a._1), nb.support(a._2), nc.support(a._3)))
+    def support(tuple: (A, B, C)): List[Name] = {
+      unions(List(na.support(tuple._1), nb.support(tuple._2), nc.support(tuple._3)))
     }
-    def act(a: (A, B, C), sub: (Name, Formula)): (A, B, C) = {
-      (na.act(a._1, sub), nb.act(a._2, sub), nc.act(a._3, sub))
+    def act(tuple: (A, B, C), sub: (Name, Formula)): (A, B, C) = {
+      (na.act(tuple._1, sub), nb.act(tuple._2, sub), nc.act(tuple._3, sub))
     }
-    def swap(a: (A, B, C), names: (Name, Name)): (A, B, C) = {
-      (na.swap(a._1, names), nb.swap(a._2, names), nc.swap(a._3, names))
+    def swap(tuple: (A, B, C), names: (Name, Name)): (A, B, C) = {
+      (na.swap(tuple._1, names), nb.swap(tuple._2, names), nc.swap(tuple._3, names))
     }
   }
 
   given nominalTuple4[A, B, C, D](using
     na: Nominal[A], nb: Nominal[B], nc: Nominal[C], nd: Nominal[D]
   ): Nominal[(A, B, C, D)] with {
-    def support(a: (A, B, C, D)): List[Name] = {
-      unions(List(na.support(a._1), nb.support(a._2), nc.support(a._3), nd.support(a._4)))
+    def support(tuple: (A, B, C, D)): List[Name] = {
+      unions(List(na.support(tuple._1), nb.support(tuple._2), nc.support(tuple._3), nd.support(tuple._4)))
     }
-    def act(a: (A, B, C, D), sub: (Name, Formula)): (A, B, C, D) = {
-      (na.act(a._1, sub), nb.act(a._2, sub), nc.act(a._3, sub), nd.act(a._4, sub))
+    def act(tuple: (A, B, C, D), sub: (Name, Formula)): (A, B, C, D) = {
+      (na.act(tuple._1, sub), nb.act(tuple._2, sub), nc.act(tuple._3, sub), nd.act(tuple._4, sub))
     }
-    def swap(a: (A, B, C, D), names: (Name, Name)): (A, B, C, D) = {
-      (na.swap(a._1, names), nb.swap(a._2, names), nc.swap(a._3, names), nd.swap(a._4, names))
+    def swap(tuple: (A, B, C, D), names: (Name, Name)): (A, B, C, D) = {
+      (na.swap(tuple._1, names), nb.swap(tuple._2, names), nc.swap(tuple._3, names), nd.swap(tuple._4, names))
     }
   }
 
   given nominalTuple5[A, B, C, D, E](using
     na: Nominal[A], nb: Nominal[B], nc: Nominal[C], nd: Nominal[D], ne: Nominal[E]
   ): Nominal[(A, B, C, D, E)] with {
-    def support(a: (A, B, C, D, E)): List[Name] = {
-      unions(List(na.support(a._1), nb.support(a._2), nc.support(a._3), nd.support(a._4), ne.support(a._5)))
+    def support(tuple: (A, B, C, D, E)): List[Name] = {
+      unions(List(na.support(tuple._1), nb.support(tuple._2), nc.support(tuple._3), nd.support(tuple._4), ne.support(tuple._5)))
     }
-    def act(a: (A, B, C, D, E), sub: (Name, Formula)): (A, B, C, D, E) = {
-      (na.act(a._1, sub), nb.act(a._2, sub), nc.act(a._3, sub), nd.act(a._4, sub), ne.act(a._5, sub))
+    def act(tuple: (A, B, C, D, E), sub: (Name, Formula)): (A, B, C, D, E) = {
+      (na.act(tuple._1, sub), nb.act(tuple._2, sub), nc.act(tuple._3, sub), nd.act(tuple._4, sub), ne.act(tuple._5, sub))
     }
-    def swap(a: (A, B, C, D, E), names: (Name, Name)): (A, B, C, D, E) = {
-      (na.swap(a._1, names), nb.swap(a._2, names), nc.swap(a._3, names), nd.swap(a._4, names), ne.swap(a._5, names))
+    def swap(tuple: (A, B, C, D, E), names: (Name, Name)): (A, B, C, D, E) = {
+      (na.swap(tuple._1, names), nb.swap(tuple._2, names), nc.swap(tuple._3, names), nd.swap(tuple._4, names), ne.swap(tuple._5, names))
     }
   }
 
   given nominalTuple6[A, B, C, D, E, H](using
     na: Nominal[A], nb: Nominal[B], nc: Nominal[C], nd: Nominal[D], ne: Nominal[E], nh: Nominal[H]
   ): Nominal[(A, B, C, D, E, H)] with {
-    def support(a: (A, B, C, D, E, H)): List[Name] = {
-      unions(List(na.support(a._1), nb.support(a._2), nc.support(a._3), nd.support(a._4), ne.support(a._5), nh.support(a._6)))
+    def support(tuple: (A, B, C, D, E, H)): List[Name] = {
+      unions(List(na.support(tuple._1), nb.support(tuple._2), nc.support(tuple._3), nd.support(tuple._4), ne.support(tuple._5), nh.support(tuple._6)))
     }
-    def act(a: (A, B, C, D, E, H), sub: (Name, Formula)): (A, B, C, D, E, H) = {
-      (na.act(a._1, sub), nb.act(a._2, sub), nc.act(a._3, sub), nd.act(a._4, sub), ne.act(a._5, sub), nh.act(a._6, sub))
+    def act(tuple: (A, B, C, D, E, H), sub: (Name, Formula)): (A, B, C, D, E, H) = {
+      (na.act(tuple._1, sub), nb.act(tuple._2, sub), nc.act(tuple._3, sub), nd.act(tuple._4, sub), ne.act(tuple._5, sub), nh.act(tuple._6, sub))
     }
-    def swap(a: (A, B, C, D, E, H), names: (Name, Name)): (A, B, C, D, E, H) = {
-      (na.swap(a._1, names), nb.swap(a._2, names), nc.swap(a._3, names), nd.swap(a._4, names), ne.swap(a._5, names), nh.swap(a._6, names))
+    def swap(tuple: (A, B, C, D, E, H), names: (Name, Name)): (A, B, C, D, E, H) = {
+      (na.swap(tuple._1, names), nb.swap(tuple._2, names), nc.swap(tuple._3, names), nd.swap(tuple._4, names), ne.swap(tuple._5, names), nh.swap(tuple._6, names))
     }
   }
 
   given nominalSystem[A](using na: Nominal[A]): Nominal[System[A]] with {
-    def support(s: System[A]): List[Name] = {
-      val keyNames: List[Name] = s.keys.toList.flatMap(_.keys)
-      val valSupport: List[Name] = unions(s.values.toList.map(na.support))
+    def support(sys: System[A]): List[Name] = {
+      val keyNames: List[Name] = sys.keys.toList.flatMap(_.keys)
+      val valSupport: List[Name] = unions(sys.values.toList.map(na.support))
       (keyNames ++ valSupport).distinct
     }
 
-    def act(s: System[A], sub: (Name, Formula)): System[A] = {
+    def act(sys: System[A], sub: (Name, Formula)): System[A] = {
       val (i, phi) = sub
-      addAssocs(s.toList, i, phi)
+      addAssocs(sys.toList, i, phi)
     }
 
     private def addAssocs(assocs: List[(Face, A)], i: Name, phi: Formula): System[A] = assocs match {
@@ -483,9 +483,9 @@ case class Nameless[A](value: A)
 
 object Nameless {
   given nominalNameless[A]: Nominal[Nameless[A]] with {
-    def support(a: Nameless[A]): List[Name] = Nil
-    def act(a: Nameless[A], sub: (Name, Formula)): Nameless[A] = a
-    def swap(a: Nameless[A], names: (Name, Name)): Nameless[A] = a
+    def support(nameless: Nameless[A]): List[Name] = Nil
+    def act(nameless: Nameless[A], sub: (Name, Formula)): Nameless[A] = nameless
+    def swap(nameless: Nameless[A], names: (Name, Name)): Nameless[A] = nameless
   }
 }
 
@@ -498,17 +498,17 @@ type System[A] = Map[Face, A]
 object SystemOps {
   def empty[A]: System[A] = Map.empty
 
-  def insertSystem[A](alpha: Face, v: A, ts: System[A]): System[A] = {
-    if (ts.keys.exists(gamma => Face.leq(alpha, gamma))) {
-      ts
+  def insertSystem[A](alpha: Face, insertedVal: A, sys: System[A]): System[A] = {
+    if (sys.keys.exists(gamma => Face.leq(alpha, gamma))) {
+      sys
     } else {
-      val filtered = ts.filter { case (gamma, _) => !Face.leq(gamma, alpha) }
-      filtered + (alpha -> v)
+      val filtered = sys.filter { case (gamma, _) => !Face.leq(gamma, alpha) }
+      filtered + (alpha -> insertedVal)
     }
   }
 
-  def insertsSystem[A](faces: List[(Face, A)], us: System[A]): System[A] = {
-    faces.foldRight(us) { case ((alpha, v), acc) => insertSystem(alpha, v, acc) }
+  def insertsSystem[A](faces: List[(Face, A)], sys: System[A]): System[A] = {
+    faces.foldRight(sys) { case ((alpha, v), acc) => insertSystem(alpha, v, acc) }
   }
 
   def mkSystem[A](pairs: List[(Face, A)]): System[A] = {
@@ -528,28 +528,28 @@ object SystemOps {
     )
   }
 
-  def transposeSystemAndList[A, B](tss: System[List[A]], us: List[B]): List[(System[A], B)] = us match {
+  def transposeSystemAndList[A, B](sys: System[List[A]], items: List[B]): List[(System[A], B)] = items match {
     case Nil     => Nil
-    case u :: rest =>
-      val heads: System[A] = tss.map { case (f, vs) => f -> vs.head }
-      val tails: System[List[A]] = tss.map { case (f, vs) => f -> vs.tail }
-      (heads, u) :: transposeSystemAndList(tails, rest)
+    case item :: rest =>
+      val heads: System[A] = sys.map { case (f, vs) => f -> vs.head }
+      val tails: System[List[A]] = sys.map { case (f, vs) => f -> vs.tail }
+      (heads, item) :: transposeSystemAndList(tails, rest)
   }
 
-  def leqSystem(alpha: Face, us: System[?]): Boolean = {
-    us.keys.exists(beta => Face.leq(alpha, beta))
+  def leqSystem(alpha: Face, sys: System[?]): Boolean = {
+    sys.keys.exists(beta => Face.leq(alpha, beta))
   }
 
-  def proj[A](us: System[A], alpha: Face)(using na: Nominal[A]): A = {
-    val usalpha = Nominal.face[System[A]](us, alpha)
-    usalpha.get(Face.eps) match {
+  def proj[A](sys: System[A], alpha: Face)(using na: Nominal[A]): A = {
+    val sysFaced = Nominal.face[System[A]](sys, alpha)
+    sysFaced.get(Face.eps) match {
       case Some(v) => v
       case None    =>
         throw new RuntimeException(
-          s"proj: eps not in $usalpha\nwhich is the $alpha\nface of $us"
+          s"proj: eps not in $sysFaced\nwhich is the $alpha\nface of $sys"
         )
+      }
     }
-  }
 
   def domain(sys: System[?]): List[Name] = {
     sys.keys.flatMap(_.keys).toList.distinct

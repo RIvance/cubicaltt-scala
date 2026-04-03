@@ -1,15 +1,17 @@
 package cubical
 
 import scala.collection.immutable.Map
-
 import Val.*
 import Branch.{OrdinaryBranch, PathBranch}
+
+import scala.annotation.tailrec
 
 object Eval {
 
   // ── Lookup functions ─────────────────────────────────────
 
   def lookupVal(x: String, env: Environment): Val = {
+    @tailrec
     def loop(ctx: Context, vals: List[Val], formulas: List[Formula], opaques: Nameless[Set[Ident]]): Val = ctx match {
       case Context.Empty => throw EvalError(s"lookupVal: not found $x")
       case Context.Update(y, parent) =>
@@ -31,8 +33,12 @@ object Eval {
     loop(env.ctx, env.vals, env.formulas, env.opaques)
   }
 
-  def lookupType(x: String, env: Environment): Val = {
-    def loop(ctx: Context, vals: List[Val], formulas: List[Formula], opaques: Nameless[Set[Ident]]): Val = ctx match {
+  def lookupType(x: String, env: Environment): Type = {
+    @tailrec
+    def loop(
+      ctx: Context, vals: List[Val], formulas: List[Formula],
+      opaques: Nameless[Set[Ident]]
+    ): Type = ctx match {
       case Context.Empty => throw EvalError(s"lookupType: not found $x")
       case Context.Update(y, parent) =>
         vals match {
@@ -64,35 +70,35 @@ object Eval {
   // ── Nominal instances ────────────────────────────────────
 
   given nominalContext: Nominal[Context] with {
-    def support(a: Context): List[Name] = Nil
-    def act(a: Context, sub: (Name, Formula)): Context = a
-    def swap(a: Context, names: (Name, Name)): Context = a
+    def support(ctx: Context): List[Name] = Nil
+    def act(ctx: Context, sub: (Name, Formula)): Context = ctx
+    def swap(ctx: Context, names: (Name, Name)): Context = ctx
   }
 
   given nominalEnvironment: Nominal[Environment] with {
-    def support(e: Environment): List[Name] = {
+    def support(env: Environment): List[Name] = {
       Nominal.support[(Context, List[Val], List[Formula], Nameless[Set[Ident]])](
-        (e.ctx, e.vals, e.formulas, e.opaques)
+        (env.ctx, env.vals, env.formulas, env.opaques)
       )
     }
-    def act(e: Environment, sub: (Name, Formula)): Environment = {
+    def act(env: Environment, sub: (Name, Formula)): Environment = {
       val r = Nominal.act[(Context, List[Val], List[Formula], Nameless[Set[Ident]])](
-        (e.ctx, e.vals, e.formulas, e.opaques), sub
+        (env.ctx, env.vals, env.formulas, env.opaques), sub
       )
       Environment(r._1, r._2, r._3, r._4)
     }
-    def swap(e: Environment, names: (Name, Name)): Environment = {
+    def swap(env: Environment, names: (Name, Name)): Environment = {
       val r = Nominal.swap[(Context, List[Val], List[Formula], Nameless[Set[Ident]])](
-        (e.ctx, e.vals, e.formulas, e.opaques), names
+        (env.ctx, env.vals, env.formulas, env.opaques), names
       )
       Environment(r._1, r._2, r._3, r._4)
     }
   }
 
   given nominalSetIdent: Nominal[Set[Ident]] with {
-    def support(a: Set[Ident]): List[Name] = Nil
-    def act(a: Set[Ident], sub: (Name, Formula)): Set[Ident] = a
-    def swap(a: Set[Ident], names: (Name, Name)): Set[Ident] = a
+    def support(identSet: Set[Ident]): List[Name] = Nil
+    def act(identSet: Set[Ident], sub: (Name, Formula)): Set[Ident] = identSet
+    def swap(identSet: Set[Ident], names: (Name, Name)): Set[Ident] = identSet
   }
 
   given nominalVal: Nominal[Val] with {
@@ -129,7 +135,7 @@ object Eval {
     def act(u: Val, iphi: (Name, Formula)): Val = {
       val (i, phi) = iphi
       if (!support(u).contains(i)) return u
-      def acti[A: Nominal](a: A): A = Nominal.act(a, iphi)
+      def acti[A: Nominal](value: A): A = Nominal.act(value, iphi)
       val phiSupport = Nominal.support(phi)
       u match {
         case VU              => VU
@@ -170,7 +176,7 @@ object Eval {
     }
 
     def swap(u: Val, ij: (Name, Name)): Val = {
-      def sw[A: Nominal](a: A): A = Nominal.swap(a, ij)
+      def sw[A: Nominal](value: A): A = Nominal.swap(value, ij)
       u match {
         case VU                       => VU
         case Closure(t, e)            => Closure(t, sw(e))
@@ -334,7 +340,7 @@ object Eval {
 
   // ── InferType (for neutral values) ───────────────────────
 
-  def inferType(v: Val): Val = v match {
+  def inferType(v: Val): Type = v match {
     case VVar(_, t)     => t
     case VOpaque(_, t)  => t
     case Closure(Term.Undef(_, t), env) => eval(t, env)
@@ -385,86 +391,86 @@ object Eval {
 
   // ── Composition and filling ──────────────────────────────
 
-  def comp(i: Name, a: Val, u: Val, ts: System[Val]): Val = {
-    if (ts.contains(Face.eps)) {
-      Nominal.face(ts(Face.eps), Face.dir(i, Dir.One))
-    } else a match {
+  def comp(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+    if (faceVals.contains(Face.eps)) {
+      Nominal.face(faceVals(Face.eps), Face.dir(i, Dir.One))
+    } else ty match {
       case VPathP(p, v0, v1) =>
-        val j = Nominal.fresh((Formula.Atom(i), a, u, ts))
+        val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
         VPLam(j, comp(i, appFormula(p, Formula.Atom(j)), appFormula(u, Formula.Atom(j)),
           SystemOps.insertsSystem(
             List((Face.dir(j, Dir.Zero), v0),
                  (Face.dir(j, Dir.One), v1)),
-            ts.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(j)) })))
+            faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(j)) })))
       case VId(b, v0, v1) =>
         u match {
-          case VIdPair(r, _) if ts.values.forall(isIdPair) =>
-            val j = Nominal.fresh((Formula.Atom(i), a, u, ts))
+          case VIdPair(r, _) if faceVals.values.forall(isIdPair) =>
+            val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
             val w = VPLam(j, comp(i, b, appFormula(r, Formula.Atom(j)),
               SystemOps.insertsSystem(
                 List((Face.dir(j, Dir.Zero), v0),
                      (Face.dir(j, Dir.One), v1)),
-                ts.map { case (alpha, tAlpha) => alpha -> appFormulaIdPair(tAlpha, j) })))
-            val tsFaced = Nominal.face(ts, Face.dir(i, Dir.One))
+                faceVals.map { case (alpha, tAlpha) => alpha -> appFormulaIdPair(tAlpha, j) })))
+            val tsFaced = Nominal.face(faceVals, Face.dir(i, Dir.One))
             VIdPair(w, SystemOps.joinSystem(
               tsFaced.map { case (alpha, tAlpha) =>
                 alpha -> sysOfIdPair(tAlpha)
               }))
-          case _ => VComp(VPLam(i, a), u, ts.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+          case _ => VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
         }
       case VSigma(sa, f) =>
-        val firstComponentSystems  = ts.map { case (alpha, tAlpha) => alpha -> fstVal(tAlpha) }
-        val secondComponentSystems = ts.map { case (alpha, tAlpha) => alpha -> sndVal(tAlpha) }
+        val firstComponentSystems  = faceVals.map { case (alpha, tAlpha) => alpha -> fstVal(tAlpha) }
+        val secondComponentSystems = faceVals.map { case (alpha, tAlpha) => alpha -> sndVal(tAlpha) }
         val (firstComponent, secondComponent) = (fstVal(u), sndVal(u))
         val filledFirstComponent  = fill(i, sa, firstComponent, firstComponentSystems)
         val composedFirstComponent  = comp(i, sa, firstComponent, firstComponentSystems)
         val composedSecondComponent = comp(i, app(f, filledFirstComponent), secondComponent, secondComponentSystems)
         VPair(composedFirstComponent, composedSecondComponent)
       case VPi(_, _) =>
-        VComp(VPLam(i, a), u, ts.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+        VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
       case VU =>
-        compUniv(u, ts.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
-      case VCompU(ca, es) if !isNeutralU(i, es, u, ts) =>
-        compU(i, ca, es, u, ts)
-      case VGlue(b, equivs) if !isNeutralGlue(i, equivs, u, ts) =>
-        compGlue(i, b, equivs, u, ts)
+        compUniv(u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+      case VCompU(ca, es) if !isNeutralU(i, es, u, faceVals) =>
+        compU(i, ca, es, u, faceVals)
+      case VGlue(baseType, equivs) if !isNeutralGlue(i, equivs, u, faceVals) =>
+        compGlue(i, baseType, equivs, u, faceVals)
       case Closure(Term.Sum(_, _, sumLabels), env) =>
         u match {
-          case VCon(n, us) if ts.values.forall { case VCon(_, _) => true; case _ => false } =>
+          case VCon(n, us) if faceVals.values.forall { case VCon(_, _) => true; case _ => false } =>
             Label.lookupLabel(n, sumLabels) match {
               case Some(as) =>
-                val tsus = SystemOps.transposeSystemAndList(
-                  ts.map { case (alpha, tAlpha) => alpha -> Val.unCon(tAlpha) }, us)
-                VCon(n, comps(i, as, env, tsus))
+                val systemsWithBases = SystemOps.transposeSystemAndList(
+                  faceVals.map { case (alpha, tAlpha) => alpha -> Val.unCon(tAlpha) }, us)
+                VCon(n, comps(i, as, env, systemsWithBases))
               case None => throw EvalError(s"comp: missing constructor in labelled sum $n")
             }
           case _ =>
-            VComp(VPLam(i, a), u, ts.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+            VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
         }
-      case Closure(Term.HSum(_, _, _), _) => compHIT(i, a, u, ts)
+      case Closure(Term.HSum(_, _, _), _) => compHIT(i, ty, u, faceVals)
       case _ =>
-        VComp(VPLam(i, a), u, ts.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+        VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
     }
   }
 
-  def compNeg(i: Name, a: Val, u: Val, ts: System[Val]): Val = {
-    comp(i, Nominal.sym(a, i), u, Nominal.sym(ts, i))
+  def compNeg(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+    comp(i, Nominal.sym(ty, i), u, Nominal.sym(faceVals, i))
   }
 
-  def compLine(a: Val, u: Val, ts: System[Val]): Val = {
-    val i = Nominal.fresh((a, u, ts))
-    comp(i, appFormula(a, Formula.Atom(i)), u,
-      ts.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) })
+  def compLine(ty: Val, u: Val, faceVals: System[Val]): Val = {
+    val i = Nominal.fresh((ty, u, faceVals))
+    comp(i, appFormula(ty, Formula.Atom(i)), u,
+      faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) })
   }
 
-  def compConstLine(a: Val, u: Val, ts: System[Val]): Val = {
-    val i = Nominal.fresh((a, u, ts))
-    comp(i, a, u,
-      ts.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) })
+  def compConstLine(ty: Val, u: Val, faceVals: System[Val]): Val = {
+    val i = Nominal.fresh((ty, u, faceVals))
+    comp(i, ty, u,
+      faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) })
   }
 
-  def comps(i: Name, as: List[(Ident, Term)], env: Environment, tsus: List[(System[Val], Val)]): List[Val] = {
-    (as, tsus) match {
+  def comps(i: Name, typedIdents: List[(Ident, Term)], env: Environment, systemsWithBases: List[(System[Val], Val)]): List[Val] = {
+    (typedIdents, systemsWithBases) match {
       case (Nil, Nil) => Nil
       case ((x, a) :: typeRest, (ts, u) :: typeValPairRest) =>
         val filledValue = fill(i, eval(a, env), u, ts)
@@ -475,28 +481,28 @@ object Eval {
     }
   }
 
-  def fill(i: Name, a: Val, u: Val, ts: System[Val]): Val = {
-    val j = Nominal.fresh((Formula.Atom(i), a, u, ts))
-    comp(j, Nominal.conj(a, (i, j)), u,
+  def fill(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+    val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
+    comp(j, Nominal.conj(ty, (i, j)), u,
       SystemOps.insertSystem(Face.dir(i, Dir.Zero), u,
-        Nominal.conj(ts, (i, j))))
+        Nominal.conj(faceVals, (i, j))))
   }
 
-  def fillNeg(i: Name, a: Val, u: Val, ts: System[Val]): Val = {
-    Nominal.sym(fill(i, Nominal.sym(a, i), u, Nominal.sym(ts, i)), i)
+  def fillNeg(i: Name, ty: Val, u: Val, faceVals: System[Val]): Val = {
+    Nominal.sym(fill(i, Nominal.sym(ty, i), u, Nominal.sym(faceVals, i)), i)
   }
 
-  def fillLine(a: Val, u: Val, ts: System[Val]): Val = {
-    val i = Nominal.fresh((a, u, ts))
-    VPLam(i, fill(i, appFormula(a, Formula.Atom(i)), u,
-      ts.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) }))
+  def fillLine(ty: Val, u: Val, faceVals: System[Val]): Val = {
+    val i = Nominal.fresh((ty, u, faceVals))
+    VPLam(i, fill(i, appFormula(ty, Formula.Atom(i)), u,
+      faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) }))
   }
 
   // ── Transport ────────────────────────────────────────────
 
   def trans(i: Name, v0: Val, v1: Val): Val = comp(i, v0, v1, Map.empty)
 
-  def transNeg(i: Name, a: Val, u: Val): Val = trans(i, Nominal.sym(a, i), u)
+  def transNeg(i: Name, ty: Val, u: Val): Val = trans(i, Nominal.sym(ty, i), u)
 
   def transLine(u: Val, v: Val): Val = {
     val i = Nominal.fresh((u, v))
@@ -508,8 +514,8 @@ object Eval {
     transNeg(i, appFormula(u, Formula.Atom(i)), v)
   }
 
-  def transps(i: Name, as: List[(Ident, Term)], env: Environment, us: List[Val]): List[Val] = {
-    (as, us) match {
+  def transps(i: Name, typedIdents: List[(Ident, Term)], env: Environment, baseVals: List[Val]): List[Val] = {
+    (typedIdents, baseVals) match {
       case (Nil, Nil) => Nil
       case ((x, a) :: typeRest, u :: valRest) =>
         val filledValue = transFill(i, eval(a, env), u)
@@ -520,27 +526,27 @@ object Eval {
     }
   }
 
-  def transFill(i: Name, a: Val, u: Val): Val = fill(i, a, u, Map.empty)
+  def transFill(i: Name, ty: Val, u: Val): Val = fill(i, ty, u, Map.empty)
 
-  def transFillNeg(i: Name, a: Val, u: Val): Val = {
-    Nominal.sym(transFill(i, Nominal.sym(a, i), u), i)
+  def transFillNeg(i: Name, ty: Val, u: Val): Val = {
+    Nominal.sym(transFill(i, Nominal.sym(ty, i), u), i)
   }
 
-  def squeeze(i: Name, a: Val, u: Val): Val = {
-    val j = Nominal.fresh((Formula.Atom(i), a, u))
+  def squeeze(i: Name, ty: Val, u: Val): Val = {
+    val j = Nominal.fresh((Formula.Atom(i), ty, u))
     val ui1 = Nominal.face(u, Face.dir(i, Dir.One))
-    comp(j, Nominal.disj(a, (i, j)), u,
+    comp(j, Nominal.disj(ty, (i, j)), u,
       SystemOps.mkSystem(List((Face.dir(i, Dir.One), ui1))))
   }
 
-  def squeezes(i: Name, xas: List[(Ident, Term)], env: Environment, us: List[Val]): List[Val] = {
-    val j = Nominal.fresh((us, env, Formula.Atom(i)))
-    val squeezedSystemsAndValues = us.map { u =>
+  def squeezes(i: Name, typedIdents: List[(Ident, Term)], env: Environment, baseVals: List[Val]): List[Val] = {
+    val j = Nominal.fresh((baseVals, env, Formula.Atom(i)))
+    val squeezedSystemsAndValues = baseVals.map { u =>
       (SystemOps.mkSystem(List(
         (Face.dir(i, Dir.One), Nominal.face(u, Face.dir(i, Dir.One)))
       )), u)
     }
-    comps(j, xas, Nominal.disj(env, (i, j)), squeezedSystemsAndValues)
+    comps(j, typedIdents, Nominal.disj(env, (i, j)), squeezedSystemsAndValues)
   }
 
   // ── Id ───────────────────────────────────────────────────
@@ -592,20 +598,20 @@ object Eval {
     case _ => VPCon(c, a, us, phis)
   }
 
-  def compHIT(i: Name, a: Val, u: Val, us: System[Val]): Val = {
-    if (Val.isNeutral(u) || Val.isNeutralSystem(us)) {
-      VComp(VPLam(i, a), u, us.map { case (alpha, uAlpha) => alpha -> VPLam(i, uAlpha) })
+  def compHIT(i: Name, sumType: Val, u: Val, faceVals: System[Val]): Val = {
+    if (Val.isNeutral(u) || Val.isNeutralSystem(faceVals)) {
+      VComp(VPLam(i, sumType), u, faceVals.map { case (alpha, uAlpha) => alpha -> VPLam(i, uAlpha) })
     } else {
       hComp(
-        Nominal.face(a, Face.dir(i, Dir.One)),
-        transpHIT(i, a, u),
-        us.map { case (alpha, uAlpha) =>
-          alpha -> VPLam(i, squeezeHIT(i, Nominal.face(a, alpha), uAlpha))
+        Nominal.face(sumType, Face.dir(i, Dir.One)),
+        transpHIT(i, sumType, u),
+        faceVals.map { case (alpha, uAlpha) =>
+          alpha -> VPLam(i, squeezeHIT(i, Nominal.face(sumType, alpha), uAlpha))
         })
     }
   }
 
-  def transpHIT(i: Name, a: Val, u: Val): Val = a match {
+  def transpHIT(i: Name, sumType: Val, u: Val): Val = sumType match {
     case Closure(Term.HSum(_, _, sumLabels), env) =>
       u match {
         case VCon(n, us) =>
@@ -616,25 +622,25 @@ object Eval {
         case VPCon(c, _, ws0, phis) =>
           Label.lookupLabel(c, sumLabels) match {
             case Some(as) =>
-              pcon(c, Nominal.face(a, Face.dir(i, Dir.One)),
+              pcon(c, Nominal.face(sumType, Face.dir(i, Dir.One)),
                 transps(i, as, env, ws0), phis)
             case None => throw EvalError(s"transpHIT: missing path constructor $c")
           }
         case VHComp(_, v, vs) =>
-          val j = Nominal.fresh((a, u))
-          val aij = Nominal.swap(a, (i, j))
+          val j = Nominal.fresh((sumType, u))
+          val aij = Nominal.swap(sumType, (i, j))
           hComp(
-            Nominal.face(a, Face.dir(i, Dir.One)),
-            transpHIT(i, a, v),
+            Nominal.face(sumType, Face.dir(i, Dir.One)),
+            transpHIT(i, sumType, v),
             vs.map { case (alpha, vAlpha) =>
               alpha -> VPLam(j, transpHIT(j, Nominal.face(aij, alpha), appFormula(vAlpha, Formula.Atom(j))))
             })
         case _ => throw EvalError(s"transpHIT: neutral $u")
       }
-    case _ => throw EvalError(s"transpHIT: not an HSum $a")
+    case _ => throw EvalError(s"transpHIT: not an HSum $sumType")
   }
 
-  def squeezeHIT(i: Name, a: Val, u: Val): Val = a match {
+  def squeezeHIT(i: Name, sumType: Val, u: Val): Val = sumType match {
     case Closure(Term.HSum(_, _, sumLabels), env) =>
       u match {
         case VCon(n, us) =>
@@ -645,33 +651,33 @@ object Eval {
         case VPCon(c, _, ws0, phis) =>
           Label.lookupLabel(c, sumLabels) match {
             case Some(as) =>
-              pcon(c, Nominal.face(a, Face.dir(i, Dir.One)),
+              pcon(c, Nominal.face(sumType, Face.dir(i, Dir.One)),
                 squeezes(i, as, env, ws0), phis)
             case None => throw EvalError(s"squeezeHIT: missing path constructor $c")
           }
         case VHComp(_, v, vs) =>
-          val j = Nominal.fresh((a, u))
+          val j = Nominal.fresh((sumType, u))
           hComp(
-            Nominal.face(a, Face.dir(i, Dir.One)),
-            squeezeHIT(i, a, v),
+            Nominal.face(sumType, Face.dir(i, Dir.One)),
+            squeezeHIT(i, sumType, v),
             vs.map { case (alpha, vAlpha) =>
               alpha.get(i) match {
                 case None =>
-                  alpha -> VPLam(j, squeezeHIT(i, Nominal.face(a, alpha), appFormula(vAlpha, Formula.Atom(j))))
+                  alpha -> VPLam(j, squeezeHIT(i, Nominal.face(sumType, alpha), appFormula(vAlpha, Formula.Atom(j))))
                 case Some(Dir.Zero) =>
-                  alpha -> VPLam(j, transpHIT(i, Nominal.face(a, alpha.removed(i)), appFormula(vAlpha, Formula.Atom(j))))
+                  alpha -> VPLam(j, transpHIT(i, Nominal.face(sumType, alpha.removed(i)), appFormula(vAlpha, Formula.Atom(j))))
                 case Some(Dir.One) =>
                   alpha -> vAlpha
               }
             })
         case _ => throw EvalError(s"squeezeHIT: neutral $u")
       }
-    case _ => throw EvalError(s"squeezeHIT: not an HSum $a")
+    case _ => throw EvalError(s"squeezeHIT: not an HSum $sumType")
   }
 
-  def hComp(a: Val, u: Val, us: System[Val]): Val = {
-    if (us.contains(Face.eps)) appFormula(us(Face.eps), Formula.Dir(Dir.One))
-    else VHComp(a, u, us)
+  def hComp(ty: Val, u: Val, faceVals: System[Val]): Val = {
+    if (faceVals.contains(Face.eps)) appFormula(faceVals(Face.eps), Formula.Dir(Dir.One))
+    else VHComp(ty, u, faceVals)
   }
 
   // ── Glue ─────────────────────────────────────────────────
@@ -680,9 +686,9 @@ object Eval {
   def equivFun(v: Val): Val = fstVal(sndVal(v))
   def equivContr(v: Val): Val = sndVal(sndVal(v))
 
-  def glue(b: Val, ts: System[Val]): Val = {
-    if (ts.contains(Face.eps)) equivDom(ts(Face.eps))
-    else VGlue(b, ts)
+  def glue(baseType: Val, faceVals: System[Val]): Val = {
+    if (faceVals.contains(Face.eps)) equivDom(faceVals(Face.eps))
+    else VGlue(baseType, faceVals)
   }
 
   def glueElem(v: Val, us: System[Val]): Val = {
@@ -698,7 +704,7 @@ object Eval {
     }
   }
 
-  def unGlue(w: Val, b: Val, equivs: System[Val]): Val = {
+  def unGlue(w: Val, baseType: Val, equivs: System[Val]): Val = {
     if (equivs.contains(Face.eps)) app(equivFun(equivs(Face.eps)), w)
     else w match {
       case VGlueElem(v, _) => v
@@ -706,51 +712,51 @@ object Eval {
     }
   }
 
-  def isNeutralGlue(i: Name, equivs: System[Val], u0: Val, ts: System[Val]): Boolean = {
+  def isNeutralGlue(i: Name, equivs: System[Val], baseVal: Val, faceVals: System[Val]): Boolean = {
     val equivsi0 = Nominal.face(equivs, Face.dir(i, Dir.Zero))
-    ((!equivsi0.contains(Face.eps)) && Val.isNeutral(u0)) ||
-    ts.exists { case (alpha, talpha) =>
+    ((!equivsi0.contains(Face.eps)) && Val.isNeutral(baseVal)) ||
+    faceVals.exists { case (alpha, talpha) =>
       (!Nominal.face(equivs, alpha).contains(Face.eps)) && Val.isNeutral(talpha)
     }
   }
 
-  def isNeutralU(i: Name, eqs: System[Val], u0: Val, ts: System[Val]): Boolean = {
-    val eqsi0 = Nominal.face(eqs, Face.dir(i, Dir.Zero))
-    ((!eqsi0.contains(Face.eps)) && Val.isNeutral(u0)) ||
-    ts.exists { case (alpha, talpha) =>
-      (!Nominal.face(eqs, alpha).contains(Face.eps)) && Val.isNeutral(talpha)
+  def isNeutralU(i: Name, equivs: System[Val], baseVal: Val, faceVals: System[Val]): Boolean = {
+    val eqsi0 = Nominal.face(equivs, Face.dir(i, Dir.Zero))
+    ((!eqsi0.contains(Face.eps)) && Val.isNeutral(baseVal)) ||
+    faceVals.exists { case (alpha, talpha) =>
+      (!Nominal.face(equivs, alpha).contains(Face.eps)) && Val.isNeutral(talpha)
     }
   }
 
-  def extend(b: Val, q: Val, ts: System[Val]): Val = {
-    val i = Nominal.fresh((b, q, ts))
-    val ts2 = ts.map { case (alpha, tAlpha) =>
-      alpha -> appFormula(app(Nominal.face(sndVal(q), alpha), tAlpha), Formula.Atom(i))
+  def extend(baseType: Val, equivPair: Val, fiberSections: System[Val]): Val = {
+    val i = Nominal.fresh((baseType, equivPair, fiberSections))
+    val ts2 = fiberSections.map { case (alpha, tAlpha) =>
+      alpha -> appFormula(app(Nominal.face(sndVal(equivPair), alpha), tAlpha), Formula.Atom(i))
     }
-    comp(i, b, fstVal(q), ts2)
+    comp(i, baseType, fstVal(equivPair), ts2)
   }
 
-  def compGlue(i: Name, a: Val, equivs: System[Val], wi0: Val, ws: System[Val]): Val = {
-    val ai1 = Nominal.face(a, Face.dir(i, Dir.One))
-    val ungluedValuesSystem = ws.map { case (alpha, wAlpha) =>
-      alpha -> unGlue(wAlpha, Nominal.face(a, alpha), Nominal.face(equivs, alpha))
+  def compGlue(i: Name, baseType: Val, equivs: System[Val], baseAtI0: Val, faceVals: System[Val]): Val = {
+    val ai1 = Nominal.face(baseType, Face.dir(i, Dir.One))
+    val ungluedValuesSystem = faceVals.map { case (alpha, wAlpha) =>
+      alpha -> unGlue(wAlpha, Nominal.face(baseType, alpha), Nominal.face(equivs, alpha))
     }
     val ungluedValuesAtI1 = Nominal.face(ungluedValuesSystem, Face.dir(i, Dir.One))
-    val ungluedValueAtI0 = unGlue(wi0, Nominal.face(a, Face.dir(i, Dir.Zero)),
+    val ungluedValueAtI0 = unGlue(baseAtI0, Nominal.face(baseType, Face.dir(i, Dir.Zero)),
                       Nominal.face(equivs, Face.dir(i, Dir.Zero)))
-    val composedValueAtI1Preliminary = comp(i, a, ungluedValueAtI0, ungluedValuesSystem)
+    val composedValueAtI1Preliminary = comp(i, baseType, ungluedValueAtI0, ungluedValuesSystem)
     val equivalencesAtI1 = Nominal.face(equivs, Face.dir(i, Dir.One))
     val equivalencesWithoutI = equivs.filter { case (alpha, _) => !alpha.contains(i) }
 
     val filledValuesForEquivalences = equivalencesWithoutI.map { case (gamma, equivG) =>
-      gamma -> fill(i, equivDom(equivG), Nominal.face(wi0, gamma), Nominal.face(ws, gamma))
+      gamma -> fill(i, equivDom(equivG), Nominal.face(baseAtI0, gamma), Nominal.face(faceVals, gamma))
     }
     val composedValuesForEquivalencesAtI1 = equivalencesWithoutI.map { case (gamma, equivG) =>
-      gamma -> comp(i, equivDom(equivG), Nominal.face(wi0, gamma), Nominal.face(ws, gamma))
+      gamma -> comp(i, equivDom(equivG), Nominal.face(baseAtI0, gamma), Nominal.face(faceVals, gamma))
     }
 
     val pathComposedForEquivalences = equivalencesWithoutI.map { case (gamma, equivG) =>
-      gamma -> pathComp(i, Nominal.face(a, gamma), Nominal.face(ungluedValueAtI0, gamma),
+      gamma -> pathComp(i, Nominal.face(baseType, gamma), Nominal.face(ungluedValueAtI0, gamma),
         app(equivFun(equivG), filledValuesForEquivalences(gamma)), Nominal.face(ungluedValuesSystem, gamma))
     }
 
@@ -759,7 +765,7 @@ object Eval {
       common.map(k => k -> VPair(composedValuesForEquivalencesAtI1(k), pathComposedForEquivalences(k))).toMap
     }
 
-    val inputSystemAtI1 = Nominal.face(ws, Face.dir(i, Dir.One))
+    val inputSystemAtI1 = Nominal.face(faceVals, Face.dir(i, Dir.One))
 
     val extendedFiberSystem = equivalencesAtI1.map { case (gamma, equivG) =>
       val fibsgamma: System[Val] = {
@@ -784,62 +790,62 @@ object Eval {
     glueElem(composedValueAtI1, glueElemsAtI1)
   }
 
-  def mkFiberType(a: Val, x: Val, equiv: Val): Val = {
+  def mkFiberType(baseType: Val, center: Val, equiv: Val): Val = {
     val ta = Term.Var("a")
     val tx = Term.Var("x")
     val ty = Term.Var("y")
     val tf = Term.Var("f")
     val tt = Term.Var("t")
     val env = Environment.updateAll(
-      List(("a", a), ("x", x), ("f", equivFun(equiv)), ("t", equivDom(equiv))),
+      List(("a", baseType), ("x", center), ("f", equivFun(equiv)), ("t", equivDom(equiv))),
       Environment.empty)
     eval(Term.Sigma(Term.Lam("y", tt, Term.PathP(Term.PLam(Name("_"), ta), tx, Term.App(tf, ty)))), env)
   }
 
-  def pathComp(i: Name, a: Val, u0: Val, u2: Val, us: System[Val]): Val = {
-    val j = Nominal.fresh((Formula.Atom(i), a, us, u0, u2))
-    VPLam(j, comp(i, a, u0,
-      SystemOps.insertsSystem(List((Face.dir(j, Dir.One), u2)), us)))
+  def pathComp(i: Name, ty: Val, baseVal: Val, endVal: Val, faceVals: System[Val]): Val = {
+    val j = Nominal.fresh((Formula.Atom(i), ty, faceVals, baseVal, endVal))
+    VPLam(j, comp(i, ty, baseVal,
+      SystemOps.insertsSystem(List((Face.dir(j, Dir.One), endVal)), faceVals)))
   }
 
   // ── Composition in the Universe ──────────────────────────
 
-  def eqFun(eq: Val, v: Val): Val = transNegLine(eq, v)
+  def eqFun(equivPath: Val, value: Val): Val = transNegLine(equivPath, value)
 
-  def unGlueU(w: Val, b: Val, es: System[Val]): Val = {
-    if (es.contains(Face.eps)) eqFun(es(Face.eps), w)
+  def unGlueU(w: Val, baseType: Val, equivPaths: System[Val]): Val = {
+    if (equivPaths.contains(Face.eps)) eqFun(equivPaths(Face.eps), w)
     else w match {
       case VGlueElem(v, _) => v
-      case _ => VUnGlueElemU(w, b, es)
+      case _ => VUnGlueElemU(w, baseType, equivPaths)
     }
   }
 
-  def compUniv(b: Val, es: System[Val]): Val = {
-    if (es.contains(Face.eps)) appFormula(es(Face.eps), Formula.Dir(Dir.One))
-    else VCompU(b, es)
+  def compUniv(baseType: Val, equivPaths: System[Val]): Val = {
+    if (equivPaths.contains(Face.eps)) appFormula(equivPaths(Face.eps), Formula.Dir(Dir.One))
+    else VCompU(baseType, equivPaths)
   }
 
-  def compU(i: Name, a: Val, eqs: System[Val], wi0: Val, ws: System[Val]): Val = {
-    val ai1 = Nominal.face(a, Face.dir(i, Dir.One))
-    val ungluedValuesSystem = ws.map { case (alpha, wAlpha) =>
-      alpha -> unGlueU(wAlpha, Nominal.face(a, alpha), Nominal.face(eqs, alpha))
+  def compU(i: Name, baseType: Val, equivs: System[Val], baseAtI0: Val, faceVals: System[Val]): Val = {
+    val ai1 = Nominal.face(baseType, Face.dir(i, Dir.One))
+    val ungluedValuesSystem = faceVals.map { case (alpha, wAlpha) =>
+      alpha -> unGlueU(wAlpha, Nominal.face(baseType, alpha), Nominal.face(equivs, alpha))
     }
     val ungluedValuesAtI1 = Nominal.face(ungluedValuesSystem, Face.dir(i, Dir.One))
-    val ungluedValueAtI0 = unGlueU(wi0,
-      Nominal.face(a, Face.dir(i, Dir.Zero)), Nominal.face(eqs, Face.dir(i, Dir.Zero)))
-    val composedValueAtI1Preliminary = comp(i, a, ungluedValueAtI0, ungluedValuesSystem)
-    val equationsAtI1 = Nominal.face(eqs, Face.dir(i, Dir.One))
-    val equationsWithoutI = eqs.filter { case (alpha, _) => !alpha.contains(i) }
+    val ungluedValueAtI0 = unGlueU(baseAtI0,
+      Nominal.face(baseType, Face.dir(i, Dir.Zero)), Nominal.face(equivs, Face.dir(i, Dir.Zero)))
+    val composedValueAtI1Preliminary = comp(i, baseType, ungluedValueAtI0, ungluedValuesSystem)
+    val equationsAtI1 = Nominal.face(equivs, Face.dir(i, Dir.One))
+    val equationsWithoutI = equivs.filter { case (alpha, _) => !alpha.contains(i) }
 
     val filledValuesForEquations = equationsWithoutI.map { case (gamma, eqG) =>
-      gamma -> fill(i, appFormula(eqG, Formula.Dir(Dir.One)), Nominal.face(wi0, gamma), Nominal.face(ws, gamma))
+      gamma -> fill(i, appFormula(eqG, Formula.Dir(Dir.One)), Nominal.face(baseAtI0, gamma), Nominal.face(faceVals, gamma))
     }
     val composedValuesForEquationsAtI1 = equationsWithoutI.map { case (gamma, eqG) =>
-      gamma -> comp(i, appFormula(eqG, Formula.Dir(Dir.One)), Nominal.face(wi0, gamma), Nominal.face(ws, gamma))
+      gamma -> comp(i, appFormula(eqG, Formula.Dir(Dir.One)), Nominal.face(baseAtI0, gamma), Nominal.face(faceVals, gamma))
     }
 
     val pathComposedForEquations = equationsWithoutI.map { case (gamma, eqG) =>
-      gamma -> pathComp(i, Nominal.face(a, gamma), Nominal.face(ungluedValueAtI0, gamma),
+      gamma -> pathComp(i, Nominal.face(baseType, gamma), Nominal.face(ungluedValueAtI0, gamma),
         eqFun(eqG, filledValuesForEquations(gamma)), Nominal.face(ungluedValuesSystem, gamma))
     }
 
@@ -848,7 +854,7 @@ object Eval {
       common.map(k => k -> (composedValuesForEquationsAtI1(k), pathComposedForEquations(k))).toMap
     }
 
-    val inputSystemAtI1 = Nominal.face(ws, Face.dir(i, Dir.One))
+    val inputSystemAtI1 = Nominal.face(faceVals, Face.dir(i, Dir.One))
 
     val extendedFiberSystem = equationsAtI1.map { case (gamma, eqG) =>
       val fibsgamma: System[(Val, Val)] = {
@@ -871,41 +877,41 @@ object Eval {
     glueElem(composedValueAtI1, glueElemsAtI1)
   }
 
-  def lemEq(eq: Val, b: Val, aps: System[(Val, Val)]): (Val, Val) = {
+  def lemEq(equivPath: Val, baseVal: Val, adjunctionPairs: System[(Val, Val)]): (Val, Val) = {
     given Nominal[(Val, Val)] = Nominal.nominalPair[Val, Val]
 
-    val names = Nominal.freshs((eq, b, aps))
+    val names = Nominal.freshs((equivPath, baseVal, adjunctionPairs))
     val i = names(0)
     val j = names(1)
-    val ta = appFormula(eq, Formula.Dir(Dir.One))
+    val ta = appFormula(equivPath, Formula.Dir(Dir.One))
 
-    val p1Systems = aps.map { case (alpha, (aa, pa)) =>
-      val eqaj = appFormula(Nominal.face(eq, alpha), Formula.Atom(j))
-      val ba = Nominal.face(b, alpha)
+    val p1Systems = adjunctionPairs.map { case (alpha, (aa, pa)) =>
+      val eqaj = appFormula(Nominal.face(equivPath, alpha), Formula.Atom(j))
+      val ba = Nominal.face(baseVal, alpha)
       alpha -> comp(j, eqaj, appFormula(pa, Formula.Atom(i)),
         SystemOps.mkSystem(List(
           (Face.dir(i, Dir.Zero), transFill(j, eqaj, ba)),
           (Face.dir(i, Dir.One), transFillNeg(j, eqaj, aa)))))
     }
-    val thetaSystems = aps.map { case (alpha, (aa, pa)) =>
-      val eqaj = appFormula(Nominal.face(eq, alpha), Formula.Atom(j))
-      val ba = Nominal.face(b, alpha)
+    val thetaSystems = adjunctionPairs.map { case (alpha, (aa, pa)) =>
+      val eqaj = appFormula(Nominal.face(equivPath, alpha), Formula.Atom(j))
+      val ba = Nominal.face(baseVal, alpha)
       alpha -> fill(j, eqaj, appFormula(pa, Formula.Atom(i)),
         SystemOps.mkSystem(List(
           (Face.dir(i, Dir.Zero), transFill(j, eqaj, ba)),
           (Face.dir(i, Dir.One), transFillNeg(j, eqaj, aa)))))
     }
 
-    val composedVal = comp(i, ta, trans(i, appFormula(eq, Formula.Atom(i)), b), p1Systems)
-    val filledPath  = fill(i, ta, trans(i, appFormula(eq, Formula.Atom(i)), b), p1Systems)
+    val composedVal = comp(i, ta, trans(i, appFormula(equivPath, Formula.Atom(i)), baseVal), p1Systems)
+    val filledPath  = fill(i, ta, trans(i, appFormula(equivPath, Formula.Atom(i)), baseVal), p1Systems)
 
     val extendedThetaSystems = SystemOps.insertsSystem(
       List(
-        (Face.dir(i, Dir.Zero), transFill(j, appFormula(eq, Formula.Atom(j)), b)),
-        (Face.dir(i, Dir.One), transFillNeg(j, appFormula(eq, Formula.Atom(j)), composedVal))),
+        (Face.dir(i, Dir.Zero), transFill(j, appFormula(equivPath, Formula.Atom(j)), baseVal)),
+        (Face.dir(i, Dir.One), transFillNeg(j, appFormula(equivPath, Formula.Atom(j)), composedVal))),
       thetaSystems)
 
-    (composedVal, VPLam(i, compNeg(j, appFormula(eq, Formula.Atom(j)), filledPath, extendedThetaSystems)))
+    (composedVal, VPLam(i, compNeg(j, appFormula(equivPath, Formula.Atom(j)), filledPath, extendedThetaSystems)))
   }
 
   // ── Conversion ───────────────────────────────────────────
@@ -1068,8 +1074,8 @@ object Eval {
     case _ => v
   }
 
-  def normalEnv(ns: List[String], e: Environment): Environment = {
-    Environment.mapEnv(normal(ns, _), normalFormula, e)
+  def normalEnv(ns: List[String], env: Environment): Environment = {
+    Environment.mapEnv(normal(ns, _), normalFormula, env)
   }
 
   def normalFormula(phi: Formula): Formula = Formula.fromDNF(Formula.dnf(phi))

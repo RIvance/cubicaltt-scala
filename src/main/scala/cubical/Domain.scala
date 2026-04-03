@@ -37,6 +37,8 @@ enum Val {
   case VIdJ(ty: Val, left: Val, mot: Val, refl: Val, right: Val, path: Val)
 }
 
+type Type = Val
+
 object Val {
   def isNeutral(v: Val): Boolean = v match {
     case Closure(cubical.Term.Undef(_, _), _) => true
@@ -59,8 +61,8 @@ object Val {
     sys.values.exists(isNeutral)
   }
 
-  def mkVar(k: Int, x: String, ty: Val): Val = {
-    VVar(x + k.toString, ty)
+  def mkVar(counter: Int, varName: String, ty: Val): Val = {
+    VVar(varName + counter.toString, ty)
   }
 
   def constPath(v: Val): Val = VPLam(Name("_"), v)
@@ -161,46 +163,46 @@ object Environment {
   def formulaOfEnv(env: Environment): List[Formula] = env.formulas
 
   def domainEnv(env: Environment): List[Name] = {
-    def domCtxt(c: Context): List[Name] = c match {
-      case Context.Empty              => Nil
-      case Context.Update(_, e)       => domCtxt(e)
-      case Context.Define(_, _, e)    => domCtxt(e)
-      case Context.Substitute(i, e)   => i :: domCtxt(e)
-    }
+  def domCtxt(ctx: Context): List[Name] = ctx match {
+    case Context.Empty              => Nil
+    case Context.Update(_, parent) => domCtxt(parent)
+    case Context.Define(_, _, parent) => domCtxt(parent)
+    case Context.Substitute(i, parent)   => i :: domCtxt(parent)
+  }
     domCtxt(env.ctx)
   }
 
   def lookupIdent(x: Ident, env: Environment): Option[Val] = {
-    def go(ctx: Context, vs: List[Val], fs: List[Formula], os: Nameless[Set[Ident]]): Option[Val] = ctx match {
+    def go(ctx: Context, vals: List[Val], formulas: List[Formula], opaques: Nameless[Set[Ident]]): Option[Val] = ctx match {
       case Context.Empty => None
       case Context.Update(y, parent) =>
-        vs match {
+        vals match {
           case v :: rest =>
-            if (os.value.contains(y)) {
+            if (opaques.value.contains(y)) {
               if (x == y) {
                 v match {
                   case Val.VVar(_, ty) => Some(Val.VOpaque(x, ty))
-                  case _               => go(parent, rest, fs, os)
+                  case _               => go(parent, rest, formulas, opaques)
                 }
               } else {
-                go(parent, rest, fs, os)
+                go(parent, rest, formulas, opaques)
               }
             } else {
-              if (x == y) Some(v) else go(parent, rest, fs, os)
-            }
+              if (x == y) Some(v) else go(parent, rest, formulas, opaques)
+              }
           case Nil => None
         }
       case Context.Substitute(_, parent) =>
-        fs match {
-          case _ :: rest => go(parent, vs, rest, os)
+        formulas match {
+          case _ :: rest => go(parent, vals, rest, opaques)
           case Nil       => None
         }
       case Context.Define(_, decls, parent) =>
         Declarations.declDefs(decls).find(_._1 == x) match {
           case Some((_, body)) =>
-            val defEnv = Environment(ctx, vs, fs, os)
+            val defEnv = Environment(ctx, vals, formulas, opaques)
             Some(Eval.eval(body, defEnv))
-          case None => go(parent, vs, fs, os)
+          case None => go(parent, vals, formulas, opaques)
         }
     }
     go(env.ctx, env.vals, env.formulas, env.opaques)
@@ -225,20 +227,20 @@ object Environment {
   }
 
   def contextOfEnv(env: Environment): List[String] = {
-    def go(ctx: Context, vs: List[Val], fs: List[Formula], os: Nameless[Set[Ident]]): List[String] = ctx match {
+    def go(ctx: Context, vals: List[Val], formulas: List[Formula], opaques: Nameless[Set[Ident]]): List[String] = ctx match {
       case Context.Empty => Nil
       case Context.Update(x, parent) =>
-        vs match {
+        vals match {
           case (v @ Val.VVar(n, t)) :: rest =>
-            s"$n : $t" :: go(parent, rest, fs, os)
+            s"$n : $t" :: go(parent, rest, formulas, opaques)
           case v :: rest =>
-            s"$x = $v" :: go(parent, rest, fs, os)
+            s"$x = $v" :: go(parent, rest, formulas, opaques)
           case Nil => Nil
         }
-      case Context.Define(_, _, parent) => go(parent, vs, fs, os)
+      case Context.Define(_, _, parent) => go(parent, vals, formulas, opaques)
       case Context.Substitute(i, parent) =>
-        fs match {
-          case phi :: rest => s"$i = $phi" :: go(parent, vs, rest, os)
+        formulas match {
+          case phi :: rest => s"$i = $phi" :: go(parent, vals, rest, opaques)
           case Nil         => Nil
         }
     }

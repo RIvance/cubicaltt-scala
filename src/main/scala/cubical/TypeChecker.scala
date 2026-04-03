@@ -43,17 +43,17 @@ object TypeChecker {
       }
   }
 
-  def runInfer(typeEnv: TypeEnv, e: Term): Either[String, Val] =
-    try Right(infer(e, typeEnv))
+  def runInfer(typeEnv: TypeEnv, term: Term): Either[String, Type] =
+    try Right(infer(term, typeEnv))
     catch { case e: TypeCheckError => Left(e.msg) }
 
   // ============================================================
   // Environment modifiers
   // ============================================================
 
-  private def addTypeVal(identValPair: (Ident, Val), typeEnv: TypeEnv): TypeEnv = {
-    val (x, a) = identValPair
-    val freshVar = Eval.mkVarNice(typeEnv.names, x, a)
+  private def addTypeVal(identValPair: (Ident, Type), typeEnv: TypeEnv): TypeEnv = {
+    val (x, valType) = identValPair
+    val freshVar = Eval.mkVarNice(typeEnv.names, x, valType)
     val n = freshVar match { case VVar(n, _) => n; case _ => x }
     TypeEnv(
       n :: typeEnv.names,
@@ -70,8 +70,8 @@ object TypeChecker {
     nameFormulaPairs.foldRight(typeEnv)((nameFormulaPair, t) => addSub(nameFormulaPair, t))
 
   private def addType(identTermPair: (Ident, Term), typeEnv: TypeEnv): TypeEnv = {
-    val (x, a) = identTermPair
-    addTypeVal((x, Eval.eval(a, typeEnv.env)), typeEnv)
+    val (x, termTy) = identTermPair
+    addTypeVal((x, Eval.eval(termTy, typeEnv.env)), typeEnv)
   }
 
   private def addBranch(branchVars: List[(Ident, Val)], labelEnv: Environment, typeEnv: TypeEnv): TypeEnv = {
@@ -84,8 +84,8 @@ object TypeChecker {
     )
   }
 
-  private def addDecls(d: Declarations, typeEnv: TypeEnv): TypeEnv =
-    typeEnv.copy(env = Environment.addDecl(d, typeEnv.env))
+  private def addDecls(decls: Declarations, typeEnv: TypeEnv): TypeEnv =
+    typeEnv.copy(env = Environment.addDecl(decls, typeEnv.env))
 
   private def addTele(tele: Telescope, typeEnv: TypeEnv): TypeEnv =
     tele.foldLeft(typeEnv)((t, entry) => addType(entry, t))
@@ -97,44 +97,44 @@ object TypeChecker {
   // Utility functions
   // ============================================================
 
-  private def getLabelType(label: LabelIdent, v: Val, typeEnv: TypeEnv): (Telescope, Environment) = v match {
-    case Val.Closure(Term.Sum(_, _, labels), r) =>
+  private def getLabelType(label: LabelIdent, dataTypeVal: Val, typeEnv: TypeEnv): (Telescope, Environment) = dataTypeVal match {
+    case Val.Closure(Term.Sum(_, _, labels), closureEnv) =>
       lookupLabel(label, labels) match {
-        case Some(tele) => (tele, r)
+        case Some(tele) => (tele, closureEnv)
         case None     => throw TypeCheckError(s"getLabelType: $label in $labels")
       }
-    case Val.Closure(Term.HSum(_, _, labels), r) =>
+    case Val.Closure(Term.HSum(_, _, labels), closureEnv) =>
       lookupLabel(label, labels) match {
-        case Some(tele) => (tele, r)
+        case Some(tele) => (tele, closureEnv)
         case None     => throw TypeCheckError(s"getLabelType: $label in $labels")
       }
-    case _ => throw TypeCheckError(s"expected a data type for the constructor $label but got $v")
+    case _ => throw TypeCheckError(s"expected a data type for the constructor $label but got $dataTypeVal")
   }
 
-  private def mkVars(ns: List[String], tele: Telescope, closureEnv: Environment): List[(Ident, Val)] = tele match {
+  private def mkVars(usedNames: List[String], tele: Telescope, closureEnv: Environment): List[(Ident, Val)] = tele match {
     case Nil => Nil
     case (x, a) :: teleRest =>
-      val freshVar = Eval.mkVarNice(ns, x, Eval.eval(a, closureEnv))
-      val n = freshVar match { case VVar(n, _) => n; case _ => x }
-      (x, freshVar) :: mkVars(n :: ns, teleRest, Environment.update((x, freshVar), closureEnv))
+      val freshVar = Eval.mkVarNice(usedNames, x, Eval.eval(a, closureEnv))
+      val freshName = freshVar match { case VVar(n, _) => n; case _ => x }
+      (x, freshVar) :: mkVars(freshName :: usedNames, teleRest, Environment.update((x, freshVar), closureEnv))
   }
 
   // ============================================================
   // The bidirectional type checker
   // ============================================================
 
-  def check(a: Val, t: Term, typeEnv: TypeEnv): Unit = (a, t) match {
+  def check(expectedType: Type, t: Term, typeEnv: TypeEnv): Unit = (expectedType, t) match {
     case (_, Term.Undef(_, _)) => ()
 
     case (_, Term.Hole(l)) =>
       val e = Environment.contextOfEnv(typeEnv.env).reverse.mkString("\n")
       val ns = typeEnv.names
       if (typeEnv.verbose) {
-        println(s"\nHole at $l:\n\n$e${"—" * 80}\n${Eval.normal(ns, a)}\n")
+        println(s"\nHole at $l:\n\n$e${"—" * 80}\n${Eval.normal(ns, expectedType)}\n")
       }
 
     case (_, Term.Con(label, args)) =>
-      val (labelTele, closureEnv) = getLabelType(label, a, typeEnv)
+      val (labelTele, closureEnv) = getLabelType(label, expectedType, typeEnv)
       checks(labelTele, closureEnv, args, typeEnv)
 
     case (VU, Term.Pi(codomain)) => checkFam(codomain, typeEnv)
@@ -171,7 +171,7 @@ object TypeChecker {
       val (labels, closureEnv) = extractSumLabels(valA)
       check(VU, ty, typeEnv)
       val rho = typeEnv.env
-      if (!Eval.convert(typeEnv.names, a, Eval.eval(ty, rho)))
+      if (!Eval.convert(typeEnv.names, expectedType, Eval.eval(ty, rho)))
         throw TypeCheckError("check: split annotations")
       if (labels.map(labelName) != caseBranches.map(branchName))
         throw TypeCheckError("case branches does not match the data type")
@@ -198,7 +198,7 @@ object TypeChecker {
 
     case (_, Term.Where(e, d)) =>
       checkDecls(d, typeEnv.copy(indent = typeEnv.indent + 2))
-      check(a, e, addDecls(d, typeEnv))
+      check(expectedType, e, addDecls(d, typeEnv))
 
     case (VU, Term.PathP(a2, e0, e1)) =>
       val (a0, a1) = checkPLam(Val.constPath(VU), a2, typeEnv)
@@ -247,8 +247,8 @@ object TypeChecker {
 
     case _ =>
       val v = infer(t, typeEnv)
-      if (!Eval.convert(typeEnv.names, v, a))
-        throw TypeCheckError(s"check conv:\n$v\n/=\n$a")
+      if (!Eval.convert(typeEnv.names, v, expectedType))
+        throw TypeCheckError(s"check conv:\n$v\n/=\n$expectedType")
   }
 
   private def isSumOrHSum(v: Val): Boolean = v match {
@@ -257,10 +257,10 @@ object TypeChecker {
     case _                                  => false
   }
 
-  private def extractSumLabels(v: Val): (List[Label], Environment) = v match {
-    case Val.Closure(Term.Sum(_, _, labels), r)  => (labels, r)
-    case Val.Closure(Term.HSum(_, _, labels), r) => (labels, r)
-    case _                                       => (Nil, Environment.empty)
+  private def extractSumLabels(sumVal: Val): (List[Label], Environment) = sumVal match {
+    case Val.Closure(Term.Sum(_, _, labels), closureEnv)  => (labels, closureEnv)
+    case Val.Closure(Term.HSum(_, _, labels), closureEnv) => (labels, closureEnv)
+    case _                                                 => (Nil, Environment.empty)
   }
 
   def checkDecls(d: Declarations, typeEnv: TypeEnv): Unit = d match {
@@ -286,7 +286,7 @@ object TypeChecker {
       checkTele(teleRest, addType((x, a), typeEnv))
   }
 
-  private def checkFam(f: Term, typeEnv: TypeEnv): Unit = f match {
+  private def checkFam(famTerm: Term, typeEnv: TypeEnv): Unit = famTerm match {
     case Term.Lam(x, a, b) =>
       check(VU, a, typeEnv)
       check(VU, b, addType((x, a), typeEnv))
@@ -302,56 +302,56 @@ object TypeChecker {
   private def checkSystemsWith[A, B](
     us: System[A],
     vs: System[B],
-    f: (Face, A, B) => Unit,
+    checker: (Face, A, B) => Unit,
     typeEnv: TypeEnv
   ): Unit = {
     val common = us.keySet.intersect(vs.keySet)
-    common.foreach { key => f(key, us(key), vs(key)) }
+    common.foreach { key => checker(key, us(key), vs(key)) }
   }
 
   private def checkSystemWith[A](
     us: System[A],
-    f: (Face, A) => Unit,
+    checker: (Face, A) => Unit,
     typeEnv: TypeEnv
   ): Unit =
-    us.foreach { case (key, value) => f(key, value) }
+    us.foreach { case (key, value) => checker(key, value) }
 
-  private def checkGlueElem(evaledU: Val, ts: System[Val], us: System[Term], typeEnv: TypeEnv): Unit = {
-    if (ts.keySet != us.keySet)
-      throw TypeCheckError(s"Keys don't match in $ts and $us")
+  private def checkGlueElem(evaledU: Val, equivSys: System[Val], elemTerms: System[Term], typeEnv: TypeEnv): Unit = {
+    if (equivSys.keySet != elemTerms.keySet)
+      throw TypeCheckError(s"Keys don't match in $equivSys and $elemTerms")
     val rho = typeEnv.env
-    checkSystemsWith(ts, us, (alpha: Face, equivComponent: Val, u: Term) =>
+    checkSystemsWith(equivSys, elemTerms, (alpha: Face, equivComponent: Val, u: Term) =>
       check(Eval.equivDom(equivComponent), u, faceEnv(alpha, typeEnv))
     , typeEnv)
-    val evaledElems = Eval.evalSystem(rho, us)
-    checkSystemsWith(ts, evaledElems, (alpha: Face, equivComponent: Val, vAlpha: Val) => {
+    val evaledElems = Eval.evalSystem(rho, elemTerms)
+    checkSystemsWith(equivSys, evaledElems, (alpha: Face, equivComponent: Val, vAlpha: Val) => {
       if (!Eval.convert(typeEnv.names, Eval.app(Eval.equivFun(equivComponent), vAlpha), Nominal.face(evaledU, alpha)))
         throw TypeCheckError(s"Image of glue component $vAlpha doesn't match $evaledU")
     }, typeEnv)
     checkCompSystem(evaledElems, typeEnv)
   }
 
-  private def checkGlueElemU(evaledU: Val, ves: System[Val], us: System[Term], typeEnv: TypeEnv): Unit = {
-    if (ves.keySet != us.keySet)
-      throw TypeCheckError(s"Keys don't match in $ves and $us")
+  private def checkGlueElemU(evaledU: Val, equivPaths: System[Val], elemTerms: System[Term], typeEnv: TypeEnv): Unit = {
+    if (equivPaths.keySet != elemTerms.keySet)
+      throw TypeCheckError(s"Keys don't match in $equivPaths and $elemTerms")
     val rho = typeEnv.env
-    checkSystemsWith(ves, us, (alpha: Face, eqComponent: Val, u: Term) =>
+    checkSystemsWith(equivPaths, elemTerms, (alpha: Face, eqComponent: Val, u: Term) =>
       check(Eval.appFormula(eqComponent, Formula.Dir(Dir.One)), u, faceEnv(alpha, typeEnv))
     , typeEnv)
-    val evaledElems = Eval.evalSystem(rho, us)
-    checkSystemsWith(ves, evaledElems, (alpha: Face, eqComponent: Val, vAlpha: Val) => {
+    val evaledElems = Eval.evalSystem(rho, elemTerms)
+    checkSystemsWith(equivPaths, evaledElems, (alpha: Face, eqComponent: Val, vAlpha: Val) => {
       if (!Eval.convert(typeEnv.names, Eval.eqFun(eqComponent, vAlpha), Nominal.face(evaledU, alpha)))
         throw TypeCheckError(s"Transport of glueElem (for compU) component $vAlpha doesn't match $evaledU")
     }, typeEnv)
     checkCompSystem(evaledElems, typeEnv)
   }
 
-  private def checkGlue(valA: Val, ts: System[Term], typeEnv: TypeEnv): Unit = {
-    checkSystemWith(ts, (alpha: Face, tAlpha: Term) =>
+  private def checkGlue(valA: Val, equivTerms: System[Term], typeEnv: TypeEnv): Unit = {
+    checkSystemWith(equivTerms, (alpha: Face, tAlpha: Term) =>
       checkEquiv(Nominal.face(valA, alpha), tAlpha, typeEnv)
     , typeEnv)
     val rho = typeEnv.env
-    checkCompSystem(Eval.evalSystem(rho, ts), typeEnv)
+    checkCompSystem(Eval.evalSystem(rho, equivTerms), typeEnv)
   }
 
   private def mkIso(vb: Val): Val = {
@@ -449,19 +449,19 @@ object TypeChecker {
       throw TypeCheckError(s"$i is already declared")
   }
 
-  private def checkPLam(v: Val, t: Term, typeEnv: TypeEnv): (Val, Val) = t match {
+  private def checkPLam(pathTy: Val, t: Term, typeEnv: TypeEnv): (Val, Val) = t match {
     case Term.PLam(i, a) =>
       val rho = typeEnv.env
       val typeEnv2 = addSub((i, Formula.Atom(i)), typeEnv)
-      check(Eval.appFormula(v, Formula.Atom(i)), a, typeEnv2)
+      check(Eval.appFormula(pathTy, Formula.Atom(i)), a, typeEnv2)
       val v0 = Eval.eval(a, Environment.substitute((i, Formula.Dir(Dir.Zero)), rho))
       val v1 = Eval.eval(a, Environment.substitute((i, Formula.Dir(Dir.One)), rho))
       (v0, v1)
     case _ =>
       infer(t, typeEnv) match {
         case VPathP(a, a0, a1) =>
-          if (!Eval.convert(typeEnv.names, a, v))
-            throw TypeCheckError(s"checkPLam\n$v\n/=\n$a")
+          if (!Eval.convert(typeEnv.names, a, pathTy))
+            throw TypeCheckError(s"checkPLam\n$pathTy\n/=\n$a")
           (a0, a1)
         case inferredType => throw TypeCheckError(s"$inferredType is not a path")
       }
@@ -487,14 +487,14 @@ object TypeChecker {
   private def checks(tele: Telescope, closureEnv: Environment, constructorArgs: List[Term], typeEnv: TypeEnv): Unit =
     (tele, constructorArgs) match {
       case (Nil, Nil) => ()
-      case ((x, a) :: teleRest, e :: rest) =>
-        check(Eval.eval(a, closureEnv), e, typeEnv)
-        val v = Eval.eval(e, typeEnv.env)
+      case ((x, argType) :: teleRest, argTerm :: rest) =>
+        check(Eval.eval(argType, closureEnv), argTerm, typeEnv)
+        val v = Eval.eval(argTerm, typeEnv.env)
         checks(teleRest, Environment.update((x, v), closureEnv), rest, typeEnv)
       case _ => throw TypeCheckError("checks: incorrect number of arguments")
     }
 
-  def infer(e: Term, typeEnv: TypeEnv): Val = e match {
+  def infer(term: Term, typeEnv: TypeEnv): Type = term match {
     case Term.U => VU
 
     case Term.Var(n) => Eval.lookupType(n, typeEnv.env)
@@ -585,6 +585,6 @@ object TypeChecker {
       val evaledPath = Eval.eval(p, typeEnv.env)
       Eval.app(Eval.app(evaledMotive, evaledRight), evaledPath)
 
-    case _ => throw TypeCheckError(s"infer $e")
+    case _ => throw TypeCheckError(s"infer $term")
   }
 }

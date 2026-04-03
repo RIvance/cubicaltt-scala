@@ -32,22 +32,22 @@ enum Label {
 }
 
 object Label {
-  def labelTele(l: Label): (LabelIdent, Telescope) = l match {
+  def labelTele(label: Label): (LabelIdent, Telescope) = label match {
     case Label.OrdinaryLabel(c, ts)       => (c, ts)
     case Label.PathLabel(c, ts, _, _) => (c, ts)
   }
 
-  def labelName(l: Label): LabelIdent = labelTele(l)._1
+  def labelName(label: Label): LabelIdent = labelTele(label)._1
 
-  def labelTeles(ls: List[Label]): List[(LabelIdent, Telescope)] = ls.map(labelTele)
+  def labelTeles(labels: List[Label]): List[(LabelIdent, Telescope)] = labels.map(labelTele)
 
-  def lookupLabel(x: LabelIdent, ls: List[Label]): Option[Telescope] = {
-    labelTeles(ls).find(_._1 == x).map(_._2)
+  def lookupLabel(ident: LabelIdent, labels: List[Label]): Option[Telescope] = {
+    labelTeles(labels).find(_._1 == ident).map(_._2)
   }
 
-  def lookupPathLabel(x: LabelIdent, ls: List[Label]): Option[(Telescope, List[Name], System[Term])] = {
-    ls.collectFirst {
-      case Label.PathLabel(y, tele, dims, sys) if x == y => (tele, dims, sys)
+  def lookupPathLabel(ident: LabelIdent, labels: List[Label]): Option[(Telescope, List[Name], System[Term])] = {
+    labels.collectFirst {
+      case Label.PathLabel(y, tele, dims, sys) if ident == y => (tele, dims, sys)
     }
   }
 }
@@ -62,13 +62,13 @@ enum Branch {
 }
 
 object Branch {
-  def branchName(b: Branch): LabelIdent = b match {
+  def branchName(branch: Branch): LabelIdent = branch match {
     case Branch.OrdinaryBranch(c, _, _)    => c
     case Branch.PathBranch(c, _, _, _) => c
   }
 
-  def lookupBranch(x: LabelIdent, bs: List[Branch]): Option[Branch] = {
-    bs.find(b => branchName(b) == x)
+  def lookupBranch(ident: LabelIdent, branches: List[Branch]): Option[Branch] = {
+    branches.find(branch => branchName(branch) == ident)
   }
 }
 
@@ -135,21 +135,21 @@ object Term {
   // Decompose applications: t => (head, args)
   def unApps(t: Term): (Term, List[Term]) = {
     def collectApps(acc: List[Term], t: Term): (Term, List[Term]) = t match {
-      case App(r, s) => collectApps(s :: acc, r)
-      case _         => (t, acc)
+      case App(fun, arg) => collectApps(arg :: acc, fun)
+      case _             => (t, acc)
     }
     collectApps(Nil, t)
   }
 
   // Build nested applications
-  def mkApps(t: Term, ts: List[Term]): Term = t match {
-    case Con(l, us) => Con(l, us ++ ts)
-    case _          => ts.foldLeft(t)(App.apply)
+  def mkApps(head: Term, args: List[Term]): Term = head match {
+    case Con(ctor, existingArgs) => Con(ctor, existingArgs ++ args)
+    case _                       => args.foldLeft(head)(App.apply)
   }
 
   // Wrap body in nested Where declarations
-  def mkWheres(ds: List[Declarations], e: Term): Term = ds match {
-    case Nil              => e
-    case d :: restDecls   => Where(mkWheres(restDecls, e), d)
+  def mkWheres(declsList: List[Declarations], body: Term): Term = declsList match {
+    case Nil              => body
+    case decl :: restDecls   => Where(mkWheres(restDecls, body), decl)
   }
 }
