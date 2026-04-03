@@ -88,13 +88,10 @@ object TypeCheckSpec {
     val source = readFile(file)
     val expectedName = file.getName.stripSuffix(".ctt")
 
-    val parsedImports = Parser.parseImports(source) match {
-      case Left(err) => throw new RuntimeException(s"Parse failed in $filePath\n$err")
-      case Right(pi) =>
-        if (pi.name != expectedName) throw new RuntimeException(
-          s"Module name mismatch in $filePath: expected $expectedName, got ${pi.name}"
-        ) else pi
-    }
+    val parsedImports = Parser.parseImports(source)
+    if (parsedImports.name != expectedName) throw new RuntimeException(
+      s"Module name mismatch in $filePath: expected $expectedName, got ${parsedImports.name}"
+    )
 
     val parent = Option(file.getParentFile).getOrElse(new File("."))
     val importFiles = parsedImports.imports.map(imp => resolveImport(imp, parent, searchDirs))
@@ -112,13 +109,8 @@ object TypeCheckSpec {
 
     val importedNames = currentModules.flatMap(_.names)
 
-    Parser.parseModule(source, expectedName, importedNames) match {
-      case Left(err) => throw new RuntimeException(s"Resolve failed in $filePath\n$err")
-      case Right(parsed) => (
-        notOk,
-        currentLoaded + filePath,
-        currentModules :+ LoadedModule(parsed.name, parsed.declarations, parsed.names)
-      )
-    }
+    val raw = Parser.parseRawModule(source)
+    val parsed = Resolver.resolveModule(raw, importedNames)
+    (notOk, currentLoaded + filePath, currentModules :+ LoadedModule(parsed.name, parsed.declarations, parsed.names))
   }
 }

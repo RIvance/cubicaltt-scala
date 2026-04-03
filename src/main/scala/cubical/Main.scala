@@ -96,14 +96,10 @@ object Main {
     val source = Source.fromFile(file).mkString
     val expectedName = file.getName.stripSuffix(".ctt")
 
-    val parsedImports = Parser.parseImports(source) match {
-      case Left(err) =>
-        throw new RuntimeException(s"Parse failed in $filePath\n$err")
-      case Right(pi) =>
-        if pi.name != expectedName then throw new RuntimeException(
-          s"Module name mismatch in $filePath: expected $expectedName, got ${pi.name}"
-        ) else pi
-    }
+    val parsedImports = Parser.parseImports(source)
+    if parsedImports.name != expectedName then throw new RuntimeException(
+      s"Module name mismatch in $filePath: expected $expectedName, got ${parsedImports.name}"
+    )
 
     val importFiles = parsedImports.imports.map(imp => resolveImport(imp, localDir, searchDirs))
     var currentNotOk = notOk + filePath
@@ -119,17 +115,10 @@ object Main {
 
     val importedNames = currentModules.flatMap(_.names)
 
-    Parser.parseModule(source, expectedName, importedNames) match {
-      case Left(err) =>
-        throw new RuntimeException(s"Resolve failed in $filePath\n$err")
-      case Right(parsed) =>
-        if (verbose) println(s"Parsed $filePath successfully!")
-        (
-          notOk,
-          currentLoaded + filePath,
-          currentModules :+ LoadedModule(parsed.name, parsed.declarations, parsed.names)
-        )
-    }
+    val raw = Parser.parseRawModule(source)
+    val parsed = Resolver.resolveModule(raw, importedNames)
+    if (verbose) println(s"Parsed $filePath successfully!")
+    (notOk, currentLoaded + filePath, currentModules :+ LoadedModule(parsed.name, parsed.declarations, parsed.names))
   }
 
   private def initLoop(options: Options, filePath: String): Unit = {
@@ -208,24 +197,28 @@ object Main {
     tenv: TypeEnv,
     normalize: Boolean
   ): Unit = {
-    Parser.parseExpression(input, names) match {
-      case Left(err) =>
-        println(s"Parse error: $err")
-      case Right(body) =>
-        TypeChecker.runInfer(tenv, body) match {
-          case Left(err) =>
-            println(s"Could not type-check: $err")
-          case Right(_) =>
-            try {
-              val e = Eval.eval(body, tenv.env)
-              val result = if (normalize) Eval.normal(Nil, e) else e
-              val prefix = if (normalize) "NORMEVAL: " else "EVAL: "
-              println(s"$prefix$result")
-            } catch {
-              case ex: Exception =>
-                println(s"Exception: ${ex.getMessage}")
-            }
-        }
+    try {
+      val rawTerm = Parser.parseRawExpression(input)
+      val body = Resolver.resolveExpression(rawTerm, names)
+      TypeChecker.runInfer(tenv, body) match {
+        case Left(err) =>
+          println(s"Could not type-check: $err")
+        case Right(_) =>
+          try {
+            val e = Eval.eval(body, tenv.env)
+            val result = if (normalize) Eval.normal(Nil, e) else e
+            val prefix = if (normalize) "NORMEVAL: " else "EVAL: "
+            println(s"$prefix$result")
+          } catch {
+            case ex: Exception =>
+              println(s"Exception: ${ex.getMessage}")
+          }
+      }
+    } catch {
+      case e: ParseError =>
+        println(s"Parse error: ${e.msg}")
+      case e: ResolveError =>
+        println(s"Resolve error: ${e.msg}")
     }
   }
 

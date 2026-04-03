@@ -18,14 +18,19 @@ object DebugParser {
 
     println("\n=== Parse result ===")
     val expectedName = new java.io.File(filePath).getName.stripSuffix(".ctt")
-    Parser.parseModule(source, expectedName) match {
-      case Left(err) => println(s"PARSE ERROR: $err")
-      case Right(parsed) =>
-        println(s"Module: ${parsed.name}")
-        println(s"Imports: ${parsed.imports}")
-        println(s"Declarations: ${parsed.declarations.length}")
-        parsed.declarations.foreach(d => println(s"  $d"))
-        println(s"Names: ${parsed.names}")
+    try {
+      val raw = Parser.parseRawModule(source)
+      val parsed = Resolver.resolveModule(raw)
+      println(s"Module: ${parsed.name}")
+      println(s"Imports: ${parsed.imports}")
+      println(s"Declarations: ${parsed.declarations.length}")
+      parsed.declarations.foreach(d => println(s"  $d"))
+      println(s"Names: ${parsed.names}")
+    } catch {
+      case e: ParseError =>
+        println(s"PARSE ERROR: ${e.msg}")
+      case e: ResolveError =>
+        println(s"RESOLVE ERROR: ${e.msg}")
     }
   }
 }
