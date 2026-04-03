@@ -22,10 +22,13 @@ object TypeEnv {
 
 object TypeChecker {
 
-  // ============================================================
-  // Public API (boundary: exceptions → Option/Either for callers)
-  // ============================================================
-
+  /**
+   * Public API — run declarations or infer a type, catching `TypeCheckError`.
+   *
+   * These are the entry points used by `Main` and tests.  They convert internal
+   * exceptions into `Either[String, _]` / `Option[String]` so callers can handle
+   * errors without catching exceptions.
+   */
   def runDecls(typeEnv: TypeEnv, d: Declarations): Either[String, TypeEnv] =
     try {
       checkDecls(d, typeEnv)
@@ -47,10 +50,13 @@ object TypeChecker {
     try Right(infer(term, typeEnv))
     catch { case e: TypeCheckError => Left(e.msg) }
 
-  // ============================================================
-  // Environment modifiers
-  // ============================================================
-
+  /**
+   * Environment modifiers — extend a `TypeEnv` with a new binding or substitution.
+   *
+   * These helpers thread the environment through the bidirectional checker without
+   * exposing `Environment` mutation directly.  Each modifier is pure and returns a
+   * fresh `TypeEnv`.
+   */
   private def addTypeVal(identValPair: (Ident, Type), typeEnv: TypeEnv): TypeEnv = {
     val (x, valType) = identValPair
     val freshVar = Eval.mkVarNice(typeEnv.names, x, valType)
@@ -93,10 +99,14 @@ object TypeChecker {
   private def faceEnv(alpha: Face, typeEnv: TypeEnv): TypeEnv =
     typeEnv.copy(env = Nominal.face(typeEnv.env, alpha))
 
-  // ============================================================
-  // Utility functions
-  // ============================================================
-
+  /**
+   * Utility functions — small helpers shared by `check` and `infer`.
+   *
+   * `getLabelType` — look up the telescope of a constructor label in a sum type.
+   *
+   * `mkVars` — generate fresh `VVar` values for each entry in a telescope, extending
+   * the name list and closure environment as it goes.
+   */
   private def getLabelType(label: LabelIdent, dataTypeVal: Val, typeEnv: TypeEnv): (Telescope, Environment) = dataTypeVal match {
     case Val.Closure(Term.Sum(_, _, labels), closureEnv) =>
       lookupLabel(label, labels) match {
@@ -119,10 +129,23 @@ object TypeChecker {
       (x, freshVar) :: mkVars(freshName :: usedNames, teleRest, Environment.update((x, freshVar), closureEnv))
   }
 
-  // ============================================================
-  // The bidirectional type checker
-  // ============================================================
-
+  /**
+   * The bidirectional type checker.
+   *
+   * {{{
+   *   Γ ⊢ t ⇐ A    (check: `t` is checked against known type `A`)
+   *   Γ ⊢ t ⇒ A    (infer: type `A` is synthesised for `t`)
+   *
+   *   Γ ⊢ t ⇒ B    Γ ⊢ A =_β B
+   *   ──────────────────────────── (⇒-to-⇐ subsumption)
+   *   Γ ⊢ t ⇐ A
+   * }}}
+   *
+   * `check` pattern-matches on pairs `(A, t)`; when no specialised rule applies
+   * it falls back to synthesis followed by conversion (`Γ ⊢ t ⇒ B`, then `A =_β B`).
+   * `infer` handles introductions and eliminators that carry enough annotation to
+   * determine the type without a hint.
+   */
   def check(expectedType: Type, t: Term, typeEnv: TypeEnv): Unit = (expectedType, t) match {
     case (_, Term.Undef(_, _)) => ()
 
@@ -348,8 +371,7 @@ object TypeChecker {
 
   private def checkGlue(valA: Type, equivTerms: System[Term], typeEnv: TypeEnv): Unit = {
     checkSystemWith(equivTerms, (alpha: Face, tAlpha: Term) =>
-      checkEquiv(Nominal.face(valA, alpha), tAlpha, typeEnv)
-    , typeEnv)
+      checkEquiv(Nominal.face(valA, alpha), tAlpha, typeEnv), typeEnv)
     val rho = typeEnv.env
     checkCompSystem(Eval.evalSystem(rho, equivTerms), typeEnv)
   }

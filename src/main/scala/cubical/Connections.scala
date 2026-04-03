@@ -2,10 +2,14 @@ package cubical
 
 import scala.collection.immutable.{Map, Set}
 
-// ============================================================
-// Names (dimension variables)
-// ============================================================
-
+/**
+ * A dimension variable: an element of the interval `𝕀`.
+ *
+ * Names are the "nominal" identifiers used to abstract over interval points.
+ * A fresh `Name` is generated whenever a binder `λ̂ i. _` is evaluated; names
+ * never collide with term-level `Ident`s because they live in a separate namespace
+ * (prefixed with `!` by `Nominal.gensym`).
+ */
 case class Name(value: String) {
   override def toString: String = value
 }
@@ -20,10 +24,17 @@ object Name {
   }
 }
 
-// ============================================================
-// Directions: 0 or 1
-// ============================================================
-
+/**
+ * The two endpoints of the interval `𝕀`: `0` and `1`.
+ *
+ * `Dir` appears as the codomain of a `Face` (a partial map `Name → Dir`) and as
+ * concrete formula values `Formula.Dir(Zero)` / `Formula.Dir(One)`.
+ *
+ * The arithmetic operations match the de Morgan algebra:
+ *   - `flip` — negation: `¬0 = 1`, `¬1 = 0`
+ *   - `+`    — disjunction: `d₁ ∨ d₂`
+ *   - `*`    — conjunction: `d₁ ∧ d₂`
+ */
 enum Dir {
   case Zero, One
 
@@ -56,10 +67,18 @@ object Dir {
   }
 }
 
-// ============================================================
-// Faces: Map[Name, Dir]
-// ============================================================
-
+/**
+ * A face: a finite partial map `Name → Dir`, written `(i₁=d₁, …, iₙ=dₙ)`.
+ *
+ * Faces form a bounded lattice under `leq` (reverse refinement order):
+ *   - `eps` (the empty map) is the top element — the "everywhere" face.
+ *   - `meet α β` is the union `α ∪ β` when `α` and `β` are compatible (agree on
+ *     shared names), making them more specific.
+ *
+ * A face `α` restricts a type or value to the sub-cube where each `iₖ = dₖ`.
+ * The `act` operation on a `Nominal[A]` value applies `α` as a simultaneous
+ * dimension substitution.
+ */
 type Face = Map[Name, Dir]
 
 object Face {
@@ -126,10 +145,24 @@ object Face {
   }
 }
 
-// ============================================================
-// Formulas: the de Morgan algebra on interval names
-// ============================================================
-
+/**
+ * A formula `φ` over dimension variables: an element of the free de Morgan
+ * algebra on `Name`.
+ *
+ * The interval `𝕀` has two endpoints `0` and `1`, so formulas describe
+ * sub-cubes of the ambient dimension context.  A formula `φ` evaluates to
+ * `1` on exactly those faces where `φ` holds, giving the "extent" of a
+ * partial element `[φ ↦ u]`.
+ *
+ * Connectives:
+ *   - `Dir(d)` — constant `0` or `1`
+ *   - `Atom(i)` — dimension variable `i`, identifying the face `(i = 1)`
+ *   - `NegAtom(i)` — negation `¬i`, the face `(i = 0)`
+ *   - `And(φ, ψ)` — `φ ∧ ψ`  (conjunction / meet of faces)
+ *   - `Or(φ, ψ)`  — `φ ∨ ψ`  (disjunction / join of faces)
+ *
+ * Satisfying de Morgan duality: `¬(φ ∧ ψ) = ¬φ ∨ ¬ψ` and `¬(φ ∨ ψ) = ¬φ ∧ ¬ψ`.
+ */
 enum Formula {
   case Dir(d: cubical.Dir)
   case Atom(name: Name)
@@ -183,7 +216,14 @@ object Formula {
     case (p, q)           => Or(p, q)
   }
 
-  // Disjunctive normal form
+  /**
+   * Reduce `φ` to disjunctive normal form (a set of conjunctive clauses).
+   *
+   * Each inner `Set[(Name, D)]` is a conjunction of literals; the outer `Set` is
+   * their disjunction.  The empty inner set represents `1` (tautology); the empty
+   * outer set represents `0` (contradiction).  Redundant clauses (supersets of
+   * smaller clauses) are removed by `merge`.
+   */
   def dnf(phi: Formula): Set[Set[(Name, D)]] = phi match {
     case Dir(D.One)    => Set(Set.empty)
     case Dir(D.Zero)   => Set.empty
@@ -218,6 +258,12 @@ object Formula {
     filteredA.toSet.union(filteredB.toSet)
   }
 
+  /**
+   * Compute the pre-image of direction `d` under formula `φ`.
+   *
+   * Returns a list of faces `α` such that `φ[α] = d`.  Used in `evalSystem` to
+   * propagate dimension substitutions into partial systems.
+   */
   def invFormula(phi: Formula, d: D): List[Face] = (phi, d) match {
     case (Dir(b), _)        => if (b == d) List(Face.eps) else Nil
     case (Atom(i), _)       => List(Face.dir(i, d))
@@ -228,10 +274,21 @@ object Formula {
   }
 }
 
-// ============================================================
-// Nominal typeclass
-// ============================================================
-
+/**
+ * The `Nominal` typeclass: types that carry a free action of the group of
+ * dimension-variable permutations and support dimension substitution.
+ *
+ * Three operations:
+ *   - `support(a)` — the finite set of `Name`s that `a` depends on.
+ *     The action of any permutation fixing `support(a)` fixes `a`.
+ *   - `act(a, (i, φ))` — dimension substitution `a[i ↦ φ]`.
+ *     Replaces every free occurrence of dimension variable `i` in `a` with `φ`.
+ *   - `swap(a, (i, j))` — name transposition `a(i j)`.
+ *     Swaps all occurrences of `i` and `j` without substituting formulas.
+ *
+ * Instances are provided for all semantic objects: `Val`, `Environment`,
+ * `Formula`, `System[A]`, and their products/lists.
+ */
 trait Nominal[A] {
   def support(value: A): List[Name]
   def act(value: A, sub: (Name, Formula)): A
@@ -245,7 +302,12 @@ object Nominal {
   def act[A: Nominal](value: A, sub: (Name, Formula)): A = Nominal[A].act(value, sub)
   def swap[A: Nominal](value: A, names: (Name, Name)): A = Nominal[A].swap(value, names)
 
-  // Fresh name generation
+  /**
+   * Generate the least fresh `Name` not already in `xs`.
+   *
+   * Names are of the form `!n` for non-negative integers `n`, chosen to be
+   * syntactically distinct from user-level names in `.ctt` source.
+   */
   def gensym(xs: List[Name]): Name = {
     val nums = xs.collect {
       case Name(s) if s.startsWith("!") =>
@@ -264,42 +326,41 @@ object Nominal {
 
   def freshs[A: Nominal](value: A): LazyList[Name] = gensyms(support(value))
 
-  // Apply a face substitution: fold over face entries applying Dir substitutions
+  /** Apply a face `α` as a simultaneous substitution `[i₁ ↦ d₁, …, iₙ ↦ dₙ]`. */
   def face[A: Nominal](value: A, alpha: Face): A = {
     alpha.foldLeft(value) { case (acc, (i, d)) =>
       act(acc, (i, Formula.Dir(d)))
     }
   }
 
-  // Carve a value using the shape of a system
+  /** Restrict `value` to each face in `sys`, returning a system of the same shape. */
   def border[A: Nominal](value: A, sys: System[?]): System[A] = {
     sys.map { case (f, _) => f -> face(value, f) }
   }
 
-  // Symmetry: a{i ↦ -i}
+  /** Symmetry `a{i ↦ ¬i}` — reverses the direction of dimension `i`. */
   def sym[A: Nominal](value: A, i: Name): A = {
     act(value, (i, Formula.NegAtom(i)))
   }
 
-  // Rename: a{i ↦ j}
+  /** Rename `a{i ↦ j}` — substitute dimension `i` with `j`. */
   def rename[A: Nominal](value: A, ij: (Name, Name)): A = {
     val (i, j) = ij
     act(value, (i, Formula.Atom(j)))
   }
 
-  // Conjunction: a{i ↦ i ∧ j}
+  /** Conjunction `a{i ↦ i ∧ j}` — used in the filling construction. */
   def conj[A: Nominal](value: A, ij: (Name, Name)): A = {
     val (i, j) = ij
     act(value, (i, Formula.And(Formula.Atom(i), Formula.Atom(j))))
   }
 
-  // Disjunction: a{i ↦ i ∨ j}
+  /** Disjunction `a{i ↦ i ∨ j}` — used in the squeeze construction. */
   def disj[A: Nominal](value: A, ij: (Name, Name)): A = {
     val (i, j) = ij
     act(value, (i, Formula.Or(Formula.Atom(i), Formula.Atom(j))))
   }
 
-  // ── Helper ──
   def unions[A](lists: List[List[A]]): List[A] = {
     lists.foldRight(List.empty[A]) { (xs, acc) => (xs ++ acc).distinct }
   }
@@ -308,7 +369,15 @@ object Nominal {
     unions(items.map(fn))
   }
 
-  // ── Instances ──────────────────────────────────────────────
+  /**
+   * `Nominal` instances for primitive and compound types.
+   *
+   * Products, lists, options, and tuples up to arity 6 are derived
+   * componentwise.  `System[A]` is the most complex instance: `act` must
+   * re-index each face key through `invFormula` when the substituted name
+   * appears in the key, expanding a single face into potentially many faces
+   * in the refined system.
+   */
 
   given Nominal[Unit] with {
     def support(unit: Unit): List[Name] = Nil
@@ -475,10 +544,13 @@ object Nominal {
   }
 }
 
-// ============================================================
-// Nameless wrapper (trivial Nominal instance)
-// ============================================================
-
+/**
+ * A wrapper that gives any type `A` a trivial `Nominal` instance.
+ *
+ * `Nameless[A]` has empty support and is fixed by all dimension substitutions
+ * and swaps.  Used to embed non-nominal data (e.g. the opaque-name set
+ * `Set[Ident]`) inside `Environment` without polluting the nominal structure.
+ */
 case class Nameless[A](value: A)
 
 object Nameless {
@@ -489,15 +561,31 @@ object Nameless {
   }
 }
 
-// ============================================================
-// System type and operations
-// ============================================================
-
+/**
+ * A partial element at a system of faces: `[α₁ ↦ u₁, …, αₙ ↦ uₙ]`.
+ *
+ * `System[A]` is `Map[Face, A]` — each key `αᵢ` is a face and the corresponding
+ * value `uᵢ : A` is the component defined on that face.  The map is kept in
+ * "reduced" form: no face `αᵢ` is more specific than another (i.e. `¬(αᵢ ≤ αⱼ)`
+ * for `i ≠ j`), enforced by `SystemOps.insertSystem`.
+ *
+ * The empty system `[]` represents the everywhere-undefined partial element
+ * (the empty box).  The system `[ε ↦ u]` (key = `eps`) represents a total
+ * element `u` defined everywhere.
+ */
 type System[A] = Map[Face, A]
 
 object SystemOps {
   def empty[A]: System[A] = Map.empty
 
+  /**
+   * Insert `(alpha, insertedVal)` into `sys`, maintaining the invariant that no
+   * face in the result is a strict refinement of another.
+   *
+   * If `sys` already contains a face `γ ≤ alpha` (more general), `alpha` is
+   * redundant and discarded.  Otherwise all existing faces `γ ≥ alpha` (more
+   * specific) are removed before inserting `alpha`.
+   */
   def insertSystem[A](alpha: Face, insertedVal: A, sys: System[A]): System[A] = {
     if (sys.keys.exists(gamma => Face.leq(alpha, gamma))) {
       sys

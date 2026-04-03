@@ -8,8 +8,14 @@ import scala.annotation.tailrec
 
 object Eval {
 
-  // ── Lookup functions ─────────────────────────────────────
-
+  /**
+   * Look up the value bound to term variable `x` in `env`.
+   *
+   * Traverses the context spine; when `x` is found under a `Define` node the
+   * definition body is evaluated on the spot (lazy unfolding).
+   *
+   * Throws `EvalError` if `x` is not in scope.
+   */
   def lookupVal(x: String, env: Environment): Val = {
     @tailrec
     def loop(ctx: Context, vals: List[Val], formulas: List[Formula], opaques: Nameless[Set[Ident]]): Val = ctx match {
@@ -33,6 +39,14 @@ object Eval {
     loop(env.ctx, env.vals, env.formulas, env.opaques)
   }
 
+  /**
+   * Look up the declared type of term variable `x` in `env`.
+   *
+   * Only succeeds for variables that were introduced as `VVar(x, A)` or declared
+   * in a `Define` telescope.  Returns `A` such that `Γ ⊢ x : A`.
+   *
+   * Throws `EvalError` if `x` is not a typed variable in scope.
+   */
   def lookupType(x: String, env: Environment): Type = {
     @tailrec
     def loop(
@@ -67,8 +81,13 @@ object Eval {
 
   def lookupFormula(i: Name, env: Environment): Formula = Environment.lookupName(i, env)
 
-  // ── Nominal instances ────────────────────────────────────
-
+  /**
+   * `Nominal` typeclass instances for the runtime structures.
+   *
+   * These instances define how dimension substitution `[i ↦ φ]` and name swapping
+   * `(i j)` act on contexts, environments, and values.  They are used pervasively
+   * by `Nominal.act`, `Nominal.face`, `Nominal.swap`, etc.
+   */
   given nominalContext: Nominal[Context] with {
     def support(ctx: Context): List[Name] = Nil
     def act(ctx: Context, sub: (Name, Formula)): Context = ctx
@@ -210,8 +229,17 @@ object Eval {
     }
   }
 
-  // ── The evaluator ────────────────────────────────────────
-
+  /**
+   * Evaluate a term `t` in environment `ρ` to a value.
+   *
+   * {{{
+   *   ρ ⊢ t ↓ v    (evaluate `t` under `ρ` to value `v`)
+   * }}}
+   *
+   * Terms that are already values (lambdas, splits, sums) become `Closure`s
+   * pairing the term with its environment.  Eliminators reduce on-the-fly
+   * (β-reduction, path application, composition).
+   */
   def eval(t: Term, env: Environment): Val = {
     val opaqueSet = env.opaques.value
     t match {
@@ -284,8 +312,22 @@ object Eval {
     SystemOps.mkSystem(systemAsList)
   }
 
-  // ── Application ──────────────────────────────────────────
-
+  /**
+   * Apply a value `u` (a function or split) to an argument `v`.
+   *
+   * {{{
+   *   ─────────────────────────────────────── (β-Lam)
+   *   (λ x. t)[ρ] v  =  t[ρ, x ↦ v]
+   *
+   *   Γ ⊢ u : Π(x:A).B    Γ ⊢ v : A
+   *   ─────────────────────────────── (App)
+   *   Γ ⊢ u v : B[x ↦ v]
+   * }}}
+   *
+   * Also handles case splitting on `VCon`/`VPCon`, composition under `VHComp`
+   * (for split), and function application under `VComp(VPLam(i, VPi(A, B)))`.
+   * Returns `VApp(u, v)` when `u` is neutral (stuck).
+   */
   def app(u: Val, v: Val): Val = (u, v) match {
     case (Closure(Term.Lam(x, _, t), e), _) =>
       eval(t, Environment.update((x, v), e))
@@ -338,8 +380,29 @@ object Eval {
     case u => throw EvalError(s"sndVal: $u is not neutral.")
   }
 
-  // ── InferType (for neutral values) ───────────────────────
-
+  /**
+   * Infer the type of a neutral value `v`.
+   *
+   * Selected typing rules (read: premises above the line, conclusion below):
+   *
+   * {{{
+   *   Γ ⊢ x : A                Γ ⊢ t : Σ(x:A).B
+   *   ─────────────── (Var)    ─────────────────── (Fst)
+   *   Γ ⊢ x : A               Γ ⊢ fst t : A
+   *
+   *   Γ ⊢ t : Σ(x:A).B            Γ ⊢ t₀ : Π(x:A).B    Γ ⊢ t₁ : A
+   *   ───────────────────── (Snd)  ────────────────────────────────── (App)
+   *   Γ ⊢ snd t : B(fst t)        Γ ⊢ t₀ t₁ : B t₁
+   *
+   *   Γ ⊢ t : PathP A a₀ a₁    φ : 𝕀
+   *   ──────────────────────────────── (AppFormula)
+   *   Γ ⊢ t @@ φ : A φ
+   *
+   *   Γ, i:𝕀 ⊢ A : U    Γ ⊢ u : A 0    Γ, i:𝕀 ⊢ [φ ↦ t] : A[φ]
+   *   ─────────────────────────────────────────────────────────── (Comp)
+   *   Γ ⊢ comp i A [φ ↦ t] u : A 1
+   * }}}
+   */
   def inferType(v: Val): Type = v match {
     case VVar(_, t)     => t
     case VOpaque(_, t)  => t
@@ -370,8 +433,21 @@ object Eval {
     case _ => throw EvalError(s"inferType: not neutral $v")
   }
 
-  // ── Path application (@@) ────────────────────────────────
-
+  /**
+   * Apply a path `v` to a dimension formula `φ`  (`v @@ φ`).
+   *
+   * {{{
+   *   Γ, i:𝕀 ⊢ u : A i
+   *   ─────────────────────────────────── (PathP-β)
+   *   Γ ⊢ (λ̂ i. u) @@ φ = u[i ↦ φ] : A φ
+   *
+   *   Γ ⊢ p : PathP A a₀ a₁
+   *   ──────────────────────── (PathP-0)   ──────────────────────── (PathP-1)
+   *   Γ ⊢ p @@ 0 = a₀ : A 0               Γ ⊢ p @@ 1 = a₁ : A 1
+   * }}}
+   *
+   * When `v` is neutral and `φ` is not a direction endpoint, returns `VAppFormula(v, φ)`.
+   */
   def appFormula(v: Val, phi: Formula): Val = (v, phi) match {
     case (VPLam(i, u), _)                  => Nominal.act(u, (i, phi))
     case (t @ Closure(Term.Hole(_), _), _) => VAppFormula(t, phi)
@@ -389,8 +465,25 @@ object Eval {
     case _           => VAppFormula(v, Formula.Atom(j))
   }
 
-  // ── Composition and filling ──────────────────────────────
-
+  /**
+   * Kan composition and filling.
+   *
+   * {{{
+   *   Γ, i:𝕀 ⊢ A : U    Γ ⊢ u₀ : A 0
+   *   Γ, i:𝕀 ⊢ [φ ↦ u] : A[φ]    u(i=0) = u₀[φ]
+   *   ──────────────────────────────────────────── (comp)
+   *   Γ ⊢ comp i A [φ ↦ u] u₀ : A 1
+   *
+   *   Γ, i:𝕀 ⊢ A : U    Γ ⊢ u₀ : A 0    Γ, i:𝕀 ⊢ [φ ↦ u] : A[φ]
+   *   ────────────────────────────────────────────────────────────── (fill)
+   *   Γ ⊢ fill i A [φ ↦ u] u₀ : Path (A) u₀ (comp i A [φ ↦ u] u₀)
+   * }}}
+   *
+   * The type line `A` is given as `ty = A i` (the fibre at the current dimension).
+   * Dispatches on the shape of `A i` to use the respective composition algorithm
+   * for `Π`, `Σ`, `PathP`, `Id`, inductive types, Glue, and the universe;
+   * for everything else a `VComp` neutral is returned.
+   */
   def comp(i: Name, ty: Type, u: Val, faceVals: System[Val]): Val = {
     if (faceVals.contains(Face.eps)) {
       Nominal.face(faceVals(Face.eps), Face.dir(i, Dir.One))
@@ -398,26 +491,23 @@ object Eval {
       case VPathP(p, v0, v1) =>
         val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
         VPLam(j, comp(i, appFormula(p, Formula.Atom(j)), appFormula(u, Formula.Atom(j)),
-          SystemOps.insertsSystem(
-            List((Face.dir(j, Dir.Zero), v0),
-                 (Face.dir(j, Dir.One), v1)),
+          SystemOps.insertsSystem(List((Face.dir(j, Dir.Zero), v0), (Face.dir(j, Dir.One), v1)),
             faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(j)) })))
-      case VId(b, v0, v1) =>
-        u match {
-          case VIdPair(r, _) if faceVals.values.forall(isIdPair) =>
-            val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
-            val w = VPLam(j, comp(i, b, appFormula(r, Formula.Atom(j)),
-              SystemOps.insertsSystem(
-                List((Face.dir(j, Dir.Zero), v0),
-                     (Face.dir(j, Dir.One), v1)),
-                faceVals.map { case (alpha, tAlpha) => alpha -> appFormulaIdPair(tAlpha, j) })))
-            val tsFaced = Nominal.face(faceVals, Face.dir(i, Dir.One))
-            VIdPair(w, SystemOps.joinSystem(
-              tsFaced.map { case (alpha, tAlpha) =>
-                alpha -> sysOfIdPair(tAlpha)
-              }))
-          case _ => VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
-        }
+      case VId(b, v0, v1) => u match {
+        case VIdPair(r, _) if faceVals.values.forall(isIdPair) =>
+          val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
+          val w = VPLam(j, comp(i, b, appFormula(r, Formula.Atom(j)),
+            SystemOps.insertsSystem(
+              List((Face.dir(j, Dir.Zero), v0),
+                   (Face.dir(j, Dir.One), v1)),
+              faceVals.map { case (alpha, tAlpha) => alpha -> appFormulaIdPair(tAlpha, j) })))
+          val tsFaced = Nominal.face(faceVals, Face.dir(i, Dir.One))
+          VIdPair(w, SystemOps.joinSystem(
+            tsFaced.map { case (alpha, tAlpha) =>
+              alpha -> sysOfIdPair(tAlpha)
+            }))
+        case _ => VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+      }
       case VSigma(sa, f) =>
         val firstComponentSystems  = faceVals.map { case (alpha, tAlpha) => alpha -> fstVal(tAlpha) }
         val secondComponentSystems = faceVals.map { case (alpha, tAlpha) => alpha -> sndVal(tAlpha) }
@@ -434,22 +524,19 @@ object Eval {
         compU(i, ca, es, u, faceVals)
       case VGlue(baseType, equivs) if !isNeutralGlue(i, equivs, u, faceVals) =>
         compGlue(i, baseType, equivs, u, faceVals)
-      case Closure(Term.Sum(_, _, sumLabels), env) =>
-        u match {
-          case VCon(n, us) if faceVals.values.forall { case VCon(_, _) => true; case _ => false } =>
-            Label.lookupLabel(n, sumLabels) match {
-              case Some(as) =>
-                val systemsWithBases = SystemOps.transposeSystemAndList(
-                  faceVals.map { case (alpha, tAlpha) => alpha -> Val.unCon(tAlpha) }, us)
-                VCon(n, comps(i, as, env, systemsWithBases))
-              case None => throw EvalError(s"comp: missing constructor in labelled sum $n")
-            }
-          case _ =>
-            VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
-        }
+      case Closure(Term.Sum(_, _, sumLabels), env) => u match {
+        case VCon(n, us) if faceVals.values.forall { case VCon(_, _) => true; case _ => false } =>
+          Label.lookupLabel(n, sumLabels) match {
+            case Some(as) =>
+              val systemsWithBases = SystemOps.transposeSystemAndList(
+                faceVals.map { case (alpha, tAlpha) => alpha -> Val.unCon(tAlpha) }, us)
+              VCon(n, comps(i, as, env, systemsWithBases))
+            case None => throw EvalError(s"comp: missing constructor in labelled sum $n")
+          }
+        case _ => VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+      }
       case Closure(Term.HSum(_, _, _), _) => compHIT(i, ty, u, faceVals)
-      case _ =>
-        VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
+      case _ => VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
     }
   }
 
@@ -465,8 +552,9 @@ object Eval {
 
   def compConstLine(ty: Type, u: Val, faceVals: System[Val]): Val = {
     val i = Nominal.fresh((ty, u, faceVals))
-    comp(i, ty, u,
-      faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) })
+    comp(i, ty, u, faceVals.map {
+      case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i))
+    })
   }
 
   def comps(i: Name, typedIdents: List[(Ident, Term)], env: Environment, systemsWithBases: List[(System[Val], Val)]): List[Val] = {
@@ -484,8 +572,7 @@ object Eval {
   def fill(i: Name, ty: Type, u: Val, faceVals: System[Val]): Val = {
     val j = Nominal.fresh((Formula.Atom(i), ty, u, faceVals))
     comp(j, Nominal.conj(ty, (i, j)), u,
-      SystemOps.insertSystem(Face.dir(i, Dir.Zero), u,
-        Nominal.conj(faceVals, (i, j))))
+      SystemOps.insertSystem(Face.dir(i, Dir.Zero), u, Nominal.conj(faceVals, (i, j))))
   }
 
   def fillNeg(i: Name, ty: Type, u: Val, faceVals: System[Val]): Val = {
@@ -498,8 +585,20 @@ object Eval {
       faceVals.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(i)) }))
   }
 
-  // ── Transport ────────────────────────────────────────────
-
+  /**
+   * Transport and filling along a type line.
+   *
+   * {{{
+   *   Γ, i:𝕀 ⊢ A : U    Γ ⊢ u₀ : A 0
+   *   ─────────────────────────────────── (trans)
+   *   Γ ⊢ trans i A u₀ : A 1
+   * }}}
+   *
+   * `trans i A u₀`  is  `comp i A [] u₀`  — composition with an empty system.
+   *
+   * `fill i A u₀`  is  the path `λ̂ j. comp j (A ∧ j) [i=0 ↦ u₀] u₀`
+   * witnessing that `u₀` and its transport are connected inside `A`.
+   */
   def trans(i: Name, v0: Val, v1: Val): Val = comp(i, v0, v1, Map.empty)
 
   def transNeg(i: Name, ty: Type, u: Val): Val = trans(i, Nominal.sym(ty, i), u)
@@ -549,8 +648,21 @@ object Eval {
     comps(j, typedIdents, Nominal.disj(env, (i, j)), squeezedSystemsAndValues)
   }
 
-  // ── Id ───────────────────────────────────────────────────
-
+  /**
+   * The identity eliminator `idJ`.
+   *
+   * {{{
+   *   Γ ⊢ A : U    Γ ⊢ a : A
+   *   Γ ⊢ C : (x : A) → Id A a x → U
+   *   Γ ⊢ d : C a (reflId a)
+   *   Γ ⊢ x : A    Γ ⊢ p : Id A a x
+   *   ──────────────────────────────── (IdJ / J)
+   *   Γ ⊢ idJ A a C d x p : C x p
+   * }}}
+   *
+   * When `p = VIdPair(w, ws)` the J-rule fires and reduces to a composition;
+   * otherwise it suspends as `VIdJ(A, a, C, d, x, p)`.
+   */
   def idJ(a: Val, v: Val, c: Val, d: Val, x: Val, p: Val): Val = p match {
     case VIdPair(w, ws) =>
       val names = Nominal.freshs((a, v, c, d, x, p))
@@ -583,8 +695,20 @@ object Eval {
     ws.map { case (f, _) => f -> () }
   }
 
-  // ── HITs ─────────────────────────────────────────────────
-
+  /**
+   * Higher inductive types (HITs): constructors and composition.
+   *
+   * `pcon c A us phis` builds a path-constructor application, reducing to a
+   * concrete value when the associated face system is total.
+   *
+   * `compHIT i A u [φ ↦ ts]` computes composition in a HIT by factoring through
+   * transport (`transpHIT`) and homogeneous composition (`hComp`).
+   *
+   * `transpHIT i A u` transports `u : A 0` to `A 1` along a line `A : 𝕀 → HSum`.
+   *
+   * `squeezeHIT i A u` computes a "squeeze" (diagonal composition) in a HIT,
+   * used as a subroutine in `compHIT`.
+   */
   def pcon(c: LabelIdent, a: Val, us: List[Val], phis: List[Formula]): Val = a match {
     case Closure(Term.HSum(_, _, lbls), env) =>
       Label.lookupPathLabel(c, lbls) match {
@@ -680,8 +804,20 @@ object Eval {
     else VHComp(ty, u, faceVals)
   }
 
-  // ── Glue ─────────────────────────────────────────────────
-
+  /**
+   * Glue types and their elements.
+   *
+   * `Glue A [φ ↦ (T, e)]` — a type that is `A` outside `φ` and equivalent to `T`
+   * on `φ`, witnessed by an equivalence `e : T ≃ A`.
+   *
+   * `glueElem v [φ ↦ u]` — an element of the Glue type with base part `v : A` and
+   * component `u : T` on `φ`, subject to `e u = v [ φ ]`.
+   *
+   * `unglueElem`/`unGlue` — extract the base-type component from a glued element.
+   *
+   * `compGlue` — composition in a Glue type, following the Glue composition
+   * algorithm of the cubical TT paper (§ Glue).
+   */
   def equivDom(v: Val): Type = fstVal(v)
   def equivFun(v: Val): Val = fstVal(sndVal(v))
   def equivContr(v: Val): Val = sndVal(sndVal(v))
@@ -743,7 +879,7 @@ object Eval {
     }
     val ungluedValuesAtI1 = Nominal.face(ungluedValuesSystem, Face.dir(i, Dir.One))
     val ungluedValueAtI0 = unGlue(baseAtI0, Nominal.face(baseType, Face.dir(i, Dir.Zero)),
-                      Nominal.face(equivs, Face.dir(i, Dir.Zero)))
+      Nominal.face(equivs, Face.dir(i, Dir.Zero)))
     val composedValueAtI1Preliminary = comp(i, baseType, ungluedValueAtI0, ungluedValuesSystem)
     val equivalencesAtI1 = Nominal.face(equivs, Face.dir(i, Dir.One))
     val equivalencesWithoutI = equivs.filter { case (alpha, _) => !alpha.contains(i) }
@@ -777,7 +913,8 @@ object Eval {
       gamma -> extend(
         mkFiberType(Nominal.face(ai1, gamma), Nominal.face(composedValueAtI1Preliminary, gamma), equivG),
         app(equivContr(equivG), Nominal.face(composedValueAtI1Preliminary, gamma)),
-        SystemOps.unionSystem(fibsgamma, Nominal.face(fiberSystem, gamma)))
+        SystemOps.unionSystem(fibsgamma, Nominal.face(fiberSystem, gamma))
+      )
     }
 
     val composedValueAtI1 = compConstLine(ai1, composedValueAtI1Preliminary,
@@ -808,8 +945,19 @@ object Eval {
       SystemOps.insertsSystem(List((Face.dir(j, Dir.One), endVal)), faceVals)))
   }
 
-  // ── Composition in the Universe ──────────────────────────
-
+  /**
+   * Composition in the universe (`CompU`) and the associated Glue-in-the-universe
+   * construction.
+   *
+   * `compU i A [φ ↦ e] u₀` — composition in `U` via a system `e` of equivalence
+   * paths `e : 𝕀 → U` (type lines).  Reduces to a `glueElem` at `i=1`.
+   *
+   * `compUniv A [φ ↦ e]` — the universe-level homotopy composition (produces the
+   * type that is `A` on `φ=0` and the transported type on `φ=1`).
+   *
+   * `lemEq` — auxiliary lemma for coherence: given an equivalence path and a base
+   * point, it produces the lifted element together with a coherence path.
+   */
   def eqFun(equivPath: Val, value: Val): Val = transNegLine(equivPath, value)
 
   def unGlueU(w: Val, baseType: Type, equivPaths: System[Val]): Val = {
@@ -914,8 +1062,20 @@ object Eval {
     (composedVal, VPLam(i, compNeg(j, appFormula(equivPath, Formula.Atom(j)), filledPath, extendedThetaSystems)))
   }
 
-  // ── Conversion ───────────────────────────────────────────
-
+  /**
+   * Definitional equality (conversion) check.
+   *
+   * {{{
+   *   Γ ⊢ u : A    Γ ⊢ v : A
+   *   ──────────────────────── (Conv)
+   *   Γ ⊢ u =_β v
+   * }}}
+   *
+   * `convert ns u v`  decides `u =_β v` up to α-equivalence, with η-expansion for
+   * functions (`u ≡ v` iff `u x ≡ v x` for fresh `x`), pairs (`fst/snd`), and
+   * paths (`p @@ j ≡ q @@ j` for fresh `j`).  `ns` is the list of names already
+   * in scope used for fresh variable generation.
+   */
   def convert(ns: List[String], u: Val, v: Val): Boolean = {
     if (u == v) return true
     val j = Nominal.fresh((u, v))
@@ -1035,8 +1195,14 @@ object Eval {
     }
   }
 
-  // ── Normalization ────────────────────────────────────────
-
+  /**
+   * Normalisation: reduce a value to its fully normal form.
+   *
+   * Traverses the value tree recursively, applying η-expansion for lambdas and
+   * normalising all sub-values.  Used for pretty-printing and hole display.
+   *
+   * Note: this is "read-back" normalisation (reify), not a separate pass.
+   */
   def normal(ns: List[String], v: Val): Val = v match {
     case VU => VU
     case Closure(Term.Lam(x, t, u1), e) =>
@@ -1084,8 +1250,12 @@ object Eval {
     ts.map { case (k, v) => k -> normal(ns, v) }
   }
 
-  // ── Helpers ──────────────────────────────────────────────
-
+  /**
+   * Generate a fresh variable name that does not clash with `ns`.
+   *
+   * Tries `x`, then `x0`, `x1`, … until a name not in `ns` is found.
+   * Returns `VVar(name, ty)`.
+   */
   def mkVarNice(ns: List[String], x: String, ty: Type): Val = {
     val candidateNames = x #:: LazyList.from(0).map(n => x + n.toString)
     val name = candidateNames.find(y => !ns.contains(y)).get

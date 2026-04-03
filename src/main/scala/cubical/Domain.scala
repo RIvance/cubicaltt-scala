@@ -2,13 +2,21 @@ package cubical
 
 import scala.collection.immutable.Set
 
-// ============================================================
-// Values (semantic domain after evaluation)
-// ============================================================
-
+/**
+ * The semantic domain: values produced by evaluation.
+ *
+ * Every term evaluates to a `Val`; types are also `Val`s (see `type Type = Val`).
+ * The constructors fall into three groups:
+ *
+ *   - canonical forms (introductions): `VU`, `VPi`, `VSigma`, `VPair`, `VCon`, `VPCon`,
+ *     `VPathP`, `VPLam`, `VGlue`, `VGlueElem`, `VId`, `VIdPair`, `VLam`, `Closure`
+ *   - computed/stuck compositions: `VComp`, `VHComp`, `VUnGlueElem`, `VCompU`, `VUnGlueElemU`
+ *   - neutral values (blocked on a free variable): `VVar`, `VOpaque`, `VFst`, `VSnd`,
+ *     `VSplit`, `VApp`, `VAppFormula`, `VIdJ`
+ */
 enum Val {
   case VU
-  case Closure(term: cubical.Term, env: Environment)
+  case Closure(term: Term, env: Environment)
   case VPi(domain: Type, codomain: Type)
   case VSigma(fstTy: Type, sndTy: Type)
   case VPair(fst: Val, snd: Val)
@@ -37,12 +45,15 @@ enum Val {
   case VIdJ(ty: Type, left: Val, mot: Val, refl: Val, right: Val, path: Val)
 }
 
+/**
+ * Type alias: a `Type` is a `Val` that classifies other values.
+ */
 type Type = Val
 
 object Val {
   def isNeutral(v: Val): Boolean = v match {
-    case Closure(cubical.Term.Undef(_, _), _) => true
-    case Closure(cubical.Term.Hole(_), _)     => true
+    case Closure(Term.Undef(_, _), _) => true
+    case Closure(Term.Hole(_), _)     => true
     case VVar(_, _)            => true
     case VOpaque(_, _)         => true
     case VComp(_, _, _)        => true
@@ -73,11 +84,17 @@ object Val {
   }
 }
 
-// ============================================================
-// Environments
-// ============================================================
-
-// Context shape: tracks the structure of bindings without values
+/**
+ * The shape of a typing context, without the runtime values.
+ *
+ * The context tracks the binding structure; the actual values live in
+ * `Environment.vals` and `Environment.formulas` in parallel lists.
+ *
+ *   - `Empty`      — the empty context  Γ = ·
+ *   - `Update`     — term variable binding  Γ, x : A
+ *   - `Substitute` — dimension variable binding  Γ, i : 𝕀
+ *   - `Define`     — mutually recursive definitions  Γ, {fᵢ : Aᵢ = tᵢ}
+ */
 enum Context {
   case Empty
   case Update(name: Ident, parent: Context)
@@ -85,11 +102,14 @@ enum Context {
   case Define(loc: Loc, decls: List[Declaration], parent: Context)
 }
 
-// The environment: context shape + parallel lists of values and formulas + opaque set
-//
-// Idents in Context.Update correspond to entries in `vals` (head = most recent)
-// Names in Context.Substitute correspond to entries in `formulas` (head = most recent)
-// The Nameless set tracks opaque identifiers
+/**
+ * The runtime environment: context shape paired with parallel value/formula lists.
+ *
+ * Invariants:
+ *   - Each `Context.Update(x, _)` corresponds to the head of `vals`.
+ *   - Each `Context.Substitute(i, _)` corresponds to the head of `formulas`.
+ *   - `opaques` records which identifiers are currently opaque (blocked).
+ */
 case class Environment(
   ctx: Context,
   vals: List[Val],
@@ -189,7 +209,7 @@ object Environment {
               }
             } else {
               if (x == y) Some(v) else go(parent, rest, formulas, opaques)
-              }
+            }
           case Nil => None
         }
       case Context.Substitute(_, parent) =>
