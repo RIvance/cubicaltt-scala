@@ -57,45 +57,31 @@ object Elaborator {
     val (head, spine) = Term.unApps(term)
     val (elaboratedHead, headType, metaCtx1) = infer(head, typeEnv, metaCtx)
 
-    var currentHead = elaboratedHead
-    var currentType = headType
-    var mc = metaCtx1
-
-    for ((argIcity, argTerm) <- spine) {
-      if (argIcity == Icity.Explicit) {
-        val (insertedHead, exposedType, mc1) = insertImplicits(currentHead, currentType, mc)
-        currentHead = insertedHead
-        mc = mc1
-
-        MetaContext.force(mc, exposedType) match {
+    spine.foldLeft((elaboratedHead, headType, metaCtx1)) {
+      case ((currentHead, currentType, metaCtx), (Icity.Explicit, argTerm)) =>
+        val (insertedHead, exposedType, metaCtx1) = insertImplicits(currentHead, currentType, metaCtx)
+        MetaContext.force(metaCtx1, exposedType) match {
           case Val.VPi(Icity.Explicit, domain, codomain) =>
-            val solvedDomain = MetaContext.force(mc, domain)
-            val (elaboratedArg, mc2) = check(solvedDomain, argTerm, typeEnv, mc)
-            mc = mc2
-            val zonkedArg = MetaContext.zonkTerm(mc, elaboratedArg)
+            val solvedDomain = MetaContext.force(metaCtx1, domain)
+            val (elaboratedArg, metaCtx2) = check(solvedDomain, argTerm, typeEnv, metaCtx1)
+            val zonkedArg = MetaContext.zonkTerm(metaCtx2, elaboratedArg)
             val argVal = Eval.eval(zonkedArg, typeEnv.env)
-            currentType = Eval.app(codomain, argVal)
-            currentHead = Term.App(Icity.Explicit, currentHead, zonkedArg)
+            (Term.App(Icity.Explicit, insertedHead, zonkedArg), Eval.app(codomain, argVal), metaCtx2)
           case other =>
             throw TypeCheckError(s"Expected function type, got: $other")
         }
-      } else {
-        val forced = MetaContext.force(mc, currentType)
-        forced match {
+
+      case ((currentHead, currentType, metaCtx), (Icity.Implicit, argTerm)) =>
+        MetaContext.force(metaCtx, currentType) match {
           case Val.VPi(Icity.Implicit, domain, codomain) =>
-            val (elaboratedArg, mc1) = check(domain, argTerm, typeEnv, mc)
-            mc = mc1
-            val zonkedArg = MetaContext.zonkTerm(mc, elaboratedArg)
+            val (elaboratedArg, metaCtx1) = check(domain, argTerm, typeEnv, metaCtx)
+            val zonkedArg = MetaContext.zonkTerm(metaCtx1, elaboratedArg)
             val argVal = Eval.eval(zonkedArg, typeEnv.env)
-            currentType = Eval.app(codomain, argVal)
-            currentHead = Term.App(Icity.Implicit, currentHead, zonkedArg)
+            (Term.App(Icity.Implicit, currentHead, zonkedArg), Eval.app(codomain, argVal), metaCtx1)
           case other =>
             throw TypeCheckError(s"Expected implicit function type, got: $other")
         }
-      }
     }
-
-    (currentHead, currentType, mc)
   }
 
   /**
@@ -198,74 +184,54 @@ object Elaborator {
     * before we ever try to `check(tt, ?0)`.
     */
   private def checkApp(expected: Val, term: Term, typeEnv: TypeEnv, metaCtx: MetaContext): (Term, MetaContext) = {
-    // Step 1: Collect the full application spine
     val (head, spine) = Term.unApps(term)
-
-    // Step 2: Infer the head type
     val (elaboratedHead, headType, metaCtx1) = infer(head, typeEnv, metaCtx)
 
-    // Step 3: Walk the spine, inserting implicit metas before each explicit arg
-    //         and peeling Π-layers.  We accumulate triples of
-    //         (domain, argTerm, argMeta, icity) for later checking.
     case class SpineEntry(domain: Val, argTerm: Term, argMeta: Val, icity: Icity)
 
-    var currentHead = elaboratedHead
-    var currentType = headType
-    var mc = metaCtx1
-    val entries = scala.collection.mutable.ListBuffer.empty[SpineEntry]
+    // Phase A: Walk the spine, inserting implicit metas before each explicit arg
+    //          and peeling Π-layers. Accumulate entries for later checking.
+    val (currentHead, currentType, entries, metaCtx2) =
+      spine.foldLeft((elaboratedHead, headType, List.empty[SpineEntry], metaCtx1)) {
+        case ((head, headType, entries, metaCtx), (Icity.Explicit, argTerm)) =>
+          val (insertedHead, exposedType, metaCtx1) = insertImplicits(head, headType, metaCtx)
+          MetaContext.force(metaCtx1, exposedType) match {
+            case Val.VPi(Icity.Explicit, domain, codomain) =>
+              val (argMeta, metaCtx2) = metaCtx1.freshMeta(domain)
+              val resultType = Eval.app(codomain, argMeta)
+              (insertedHead, resultType, entries :+ SpineEntry(domain, argTerm, argMeta, Icity.Explicit), metaCtx2)
+            case other =>
+              throw TypeCheckError(s"Expected function type, got: $other")
+          }
 
-    for ((argIcity, argTerm) <- spine) {
-      if (argIcity == Icity.Explicit) {
-        // Insert implicit metas before the explicit argument
-        val (insertedHead, exposedType, mc1) = insertImplicits(currentHead, currentType, mc)
-        currentHead = insertedHead
-        mc = mc1
-
-        MetaContext.force(mc, exposedType) match {
-          case Val.VPi(Icity.Explicit, domain, codomain) =>
-            val (argMeta, mc2) = mc.freshMeta(domain)
-            val resultType = Eval.app(codomain, argMeta)
-            entries += SpineEntry(domain, argTerm, argMeta, Icity.Explicit)
-            currentType = resultType
-            mc = mc2
-          case other =>
-            throw TypeCheckError(s"Expected function type, got: $other")
-        }
-      } else {
-        // Explicit implicit application {arg} — no implicit insertion
-        val forced = MetaContext.force(mc, currentType)
-        forced match {
-          case Val.VPi(Icity.Implicit, domain, codomain) =>
-            val (argMeta, mc1) = mc.freshMeta(domain)
-            val resultType = Eval.app(codomain, argMeta)
-            entries += SpineEntry(domain, argTerm, argMeta, Icity.Implicit)
-            currentType = resultType
-            mc = mc1
-          case other =>
-            throw TypeCheckError(s"Expected implicit function type, got: $other")
-        }
+        case ((head, headType, entries, metaCtx), (Icity.Implicit, argTerm)) =>
+          MetaContext.force(metaCtx, headType) match {
+            case Val.VPi(Icity.Implicit, domain, codomain) =>
+              val (argMeta, metaCtx1) = metaCtx.freshMeta(domain)
+              val resultType = Eval.app(codomain, argMeta)
+              (head, resultType, entries :+ SpineEntry(domain, argTerm, argMeta, Icity.Implicit), metaCtx1)
+            case other =>
+              throw TypeCheckError(s"Expected implicit function type, got: $other")
+          }
       }
+
+    // Phase B: Unify the final result type with the expected type FIRST.
+    //          This backward propagation solves domain metas.
+    val metaCtx3 = Unify.unify(typeEnv.names, currentType, expected, metaCtx2)
+
+    // Phase C: Check each argument left-to-right with (now-solved) domains,
+    //          and rebuild the application term.
+    val (rebuiltTerm, metaCtx4) = entries.foldLeft((currentHead, metaCtx3)) {
+      case ((rebuiltTerm, metaCtx), entry) =>
+        val solvedDomain = MetaContext.force(metaCtx, entry.domain)
+        val (elaboratedArg, metaCtx1) = check(solvedDomain, entry.argTerm, typeEnv, metaCtx)
+        val zonkedArg = MetaContext.zonkTerm(metaCtx1, elaboratedArg)
+        val argVal = Eval.eval(zonkedArg, typeEnv.env)
+        val metaCtx2 = Unify.unify(typeEnv.names, entry.argMeta, argVal, metaCtx1)
+        (Term.App(entry.icity, rebuiltTerm, zonkedArg), metaCtx2)
     }
 
-    // Step 4: Unify the final result type with the expected type FIRST.
-    //         This backward propagation solves domain metas.
-    mc = Unify.unify(typeEnv.names, currentType, expected, mc)
-
-    // Step 5: Check each argument left-to-right with (now-solved) domains,
-    //         and rebuild the application term.
-    var rebuiltTerm = currentHead
-    for (entry <- entries) {
-      val solvedDomain = MetaContext.force(mc, entry.domain)
-      val (elaboratedArg, mc1) = check(solvedDomain, entry.argTerm, typeEnv, mc)
-      mc = mc1
-      val zonkedArg = MetaContext.zonkTerm(mc, elaboratedArg)
-      val argVal = Eval.eval(zonkedArg, typeEnv.env)
-      // Unify the arg-placeholder meta with the actual argument value
-      mc = Unify.unify(typeEnv.names, entry.argMeta, argVal, mc)
-      rebuiltTerm = Term.App(entry.icity, rebuiltTerm, zonkedArg)
-    }
-
-    (rebuiltTerm, mc)
+    (rebuiltTerm, metaCtx4)
   }
 
   private def isImplicitLam(term: Term): Boolean = term match {
