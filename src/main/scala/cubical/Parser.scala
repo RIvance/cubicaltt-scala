@@ -16,8 +16,8 @@ case class ParseError(msg: String) extends RuntimeException(msg)
  * column offset into the token sequence (not into the source text; source
  * positions were already discarded by the layout preprocessor).
  *
- * This reader is consumed by `CubicalParser`, which extends `PackratParsers`
- * and therefore requires a `Reader` over the token element type.
+ * This reader is consumed by `CubicalParser`, which extends `Parsers`
+ * and requires a `Reader` over the token element type.
  */
 private class TokenReader(tokens: IndexedSeq[String], offset: Int) extends Reader[String] {
   def first: String   = if (atEnd) "" else tokens(offset)
@@ -38,11 +38,12 @@ private class TokenReader(tokens: IndexedSeq[String], offset: Int) extends Reade
  * constructors, path constructors, and dimension names is established by
  * `Resolver`.
  *
- * Uses `PackratParsers` over a `TokenReader` fed from `LayoutPreprocessor`,
- * giving O(1) memoised backtracking instead of the O(n²) worst-case of plain
- * `RegexParsers`.
+ * Uses `Parsers` over a `TokenReader` fed from `LayoutPreprocessor`.
+ * The grammar is LL-style with no left recursion, so plain `Parsers`
+ * suffices and avoids the unbounded O(n × rules) memoisation cache
+ * that `PackratParsers` would allocate.
  */
-private[cubical] class CubicalParser extends PackratParsers {
+private[cubical] class CubicalParser extends Parsers {
 
   override type Elem = String
 
@@ -69,11 +70,11 @@ private[cubical] class CubicalParser extends PackratParsers {
       else false
     })
 
-  def ident: PackratParser[String] = identToken
+  def ident: Parser[String] = identToken
 
-  def holeIdent: PackratParser[String] = tok("?")
+  def holeIdent: Parser[String] = tok("?")
 
-  private def run[A](p: PackratParser[A], source: String): A = {
+  private def run[A](p: Parser[A], source: String): A = {
     locCounter = 0
     val tokens = LayoutPreprocessor.preprocess(source).toIndexedSeq
     val reader = new TokenReader(tokens, 0)
@@ -93,29 +94,29 @@ private[cubical] class CubicalParser extends PackratParsers {
   def parseRawExpression(source: String): RawTerm =
     run(expr, source)
 
-  private def moduleImportsParser: PackratParser[ParsedImports] =
+  private def moduleImportsParser: Parser[ParsedImports] =
     kw("module") ~> ident ~ (kw("where") ~> tok("{") ~> rep(imp <~ tok(";"))) ^^ {
       case name ~ imps => ParsedImports(name, imps)
     }
 
-  private def moduleParser: PackratParser[RawModule] =
+  private def moduleParser: Parser[RawModule] =
     kw("module") ~> ident ~ (kw("where") ~> tok("{") ~> impsAndDeclsBlock <~ tok("}")) ^^ {
       case name ~ ((imports, decls)) => RawModule(name, imports, decls)
     }
 
-  private def impsAndDeclsBlock: PackratParser[(List[String], List[RawDecl])] =
+  private def impsAndDeclsBlock: Parser[(List[String], List[RawDecl])] =
     repsep(impOrDecl, tok(";")) ^^ { items =>
       val imports = items.collect { case Left(i) => i }
       val decls   = items.collect { case Right(d) => d }
       (imports, decls)
     }
 
-  private def impOrDecl: PackratParser[Either[String, RawDecl]] =
+  private def impOrDecl: Parser[Either[String, RawDecl]] =
     imp ^^ { Left(_) } | rawDecl ^^ { Right(_) }
 
-  def imp: PackratParser[String] = kw("import") ~> ident
+  def imp: Parser[String] = kw("import") ~> ident
 
-  def dir: PackratParser[Dir] =
+  def dir: Parser[Dir] =
     tok("0") ^^^ Dir.Zero | tok("1") ^^^ Dir.One
 
   /** Negate a raw formula, applying De Morgan's laws for compound formulas. */
@@ -127,49 +128,49 @@ private[cubical] class CubicalParser extends PackratParsers {
     case RawFormula.Or(a, b)    => RawFormula.And(negRawFormula(a), negRawFormula(b))
   }
 
-  def formula: PackratParser[RawFormula] = formulaDisj
+  def formula: Parser[RawFormula] = formulaDisj
 
-  lazy val formulaDisj: PackratParser[RawFormula] =
+  lazy val formulaDisj: Parser[RawFormula] =
     formulaConj ~ rep(tok("\\/") ~> formulaConj) ^^ {
       case f ~ fs => fs.foldLeft(f)((acc, g) => RawFormula.Or(acc, g))
     }
 
-  lazy val formulaConj: PackratParser[RawFormula] =
+  lazy val formulaConj: Parser[RawFormula] =
     formulaAtom ~ rep(tok("/\\") ~> formulaAtom) ^^ {
       case f ~ fs => fs.foldLeft(f)((acc, g) => RawFormula.And(acc, g))
     }
 
-  lazy val formulaAtom: PackratParser[RawFormula] =
+  lazy val formulaAtom: Parser[RawFormula] =
     tok("-") ~> formulaAtom ^^ { negRawFormula } |
     dir ^^ { (d: cubical.Dir) => RawFormula.Dir(d) } |
     ident ^^ { name => RawFormula.Atom(name) } |
     tok("(") ~> formula <~ tok(")")
 
-  def face: PackratParser[(String, Dir)] =
+  def face: Parser[(String, Dir)] =
     tok("(") ~> ident ~ (tok("=") ~> dir) <~ tok(")") ^^ { case name ~ d => (name, d) }
 
-  def faceMap: PackratParser[RawFace] =
+  def faceMap: Parser[RawFace] =
     rep(face) ^^ { pairs => pairs.toMap }
 
-  def side: PackratParser[(RawFace, RawTerm)] =
+  def side: Parser[(RawFace, RawTerm)] =
     faceMap ~ (tok("->") ~> expr) ^^ { case alpha ~ e => (alpha, e) }
 
-  def system: PackratParser[RawSystem] =
+  def system: Parser[RawSystem] =
     tok("[") ~> repsep(side, tok(",")) <~ tok("]") ^^ { _.toMap }
 
-  def teleEntry: PackratParser[List[(String, RawTerm)]] =
+  def teleEntry: Parser[List[(String, RawTerm)]] =
     tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
       case names ~ ty => names.map(n => (n, ty))
     }
 
-  def telescope: PackratParser[List[(String, RawTerm)]] =
+  def telescope: Parser[List[(String, RawTerm)]] =
     rep(teleEntry) ^^ { _.flatten }
 
   /**
    * A single telescope entry, either explicit `(x₁ x₂ : A)` or implicit `{x₁ x₂ : A}`.
    * Returns a list of `(Icity, name, type)` triples.
    */
-  def icityTeleEntry: PackratParser[List[(Icity, String, RawTerm)]] =
+  def icityTeleEntry: Parser[List[(Icity, String, RawTerm)]] =
     tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
       case names ~ ty => names.map(n => (Icity.Explicit, n, ty))
     } |
@@ -181,59 +182,59 @@ private[cubical] class CubicalParser extends PackratParsers {
    * A telescope with icity annotations: `(x : A) {y : B} (z : C)`.
    * Requires at least one entry.
    */
-  def icityTele: PackratParser[List[(Icity, String, RawTerm)]] =
+  def icityTele: Parser[List[(Icity, String, RawTerm)]] =
     rep1(icityTeleEntry) ^^ { _.flatten }
 
-  def pathTeleEntry: PackratParser[List[(String, RawTerm)]] =
+  def pathTeleEntry: Parser[List[(String, RawTerm)]] =
     tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
       case names ~ ty => names.map(n => (n, ty))
     }
 
-  def pathTele: PackratParser[List[(String, RawTerm)]] =
+  def pathTele: Parser[List[(String, RawTerm)]] =
     rep1(pathTeleEntry) ^^ { _.flatten }
 
-  lazy val expr: PackratParser[RawTerm] = expr0
+  lazy val expr: Parser[RawTerm] = expr0
 
-  lazy val expr0: PackratParser[RawTerm] =
+  lazy val expr0: Parser[RawTerm] =
     letExpr | lamExpr | plamExpr | splitAtExpr | expr1
 
-  lazy val letExpr: PackratParser[RawTerm] =
+  lazy val letExpr: Parser[RawTerm] =
     kw("let") ~> tok("{") ~> rawDeclsBlock ~ (tok("}") ~> kw("in") ~> expr) ^^ {
       case rawDecls ~ body => RawTerm.Where(body, rawDecls)
     }
 
-  lazy val lamExpr: PackratParser[RawTerm] =
+  lazy val lamExpr: Parser[RawTerm] =
     tok("\\") ~> icityTele ~ (tok("->") ~> expr) ^^ {
       case tele ~ body => buildIcityLams(tele, body)
     }
 
-  lazy val plamExpr: PackratParser[RawTerm] =
+  lazy val plamExpr: Parser[RawTerm] =
     tok("<") ~> rep1(ident) ~ (tok(">") ~> expr) ^^ {
       case names ~ body => names.foldRight(body) { (name, acc) => RawTerm.PLam(name, acc) }
     }
 
-  lazy val splitAtExpr: PackratParser[RawTerm] =
+  lazy val splitAtExpr: Parser[RawTerm] =
     kw("split@") ~> expr ~ (kw("with") ~> tok("{") ~> repsep(branch, tok(";")) <~ tok("}")) ^^ {
       case ty ~ branches =>
         val loc = freshLoc()
         RawTerm.Split("_splitAt_L" + loc.line + "_C" + loc.col, loc, ty, branches)
     }
 
-  lazy val expr1: PackratParser[RawTerm] =
+  lazy val expr1: Parser[RawTerm] =
     piExpr | sigmaExpr | funOrExpr2
 
-  lazy val piExpr: PackratParser[RawTerm] =
+  lazy val piExpr: Parser[RawTerm] =
     icityTele ~ (tok("->") ~> expr1) ^^ {
       case tele ~ body => buildIcityBindsPi(tele, body)
     }
 
-  lazy val sigmaExpr: PackratParser[RawTerm] =
+  lazy val sigmaExpr: Parser[RawTerm] =
     pathTele ~ (tok("*") ~> expr1) ^^ {
       case tele ~ body =>
         tele.foldRight(body) { case ((name, ty), acc) => RawTerm.Sigma(RawTerm.Lam(Icity.Explicit, name, ty, acc)) }
     }
 
-  lazy val funOrExpr2: PackratParser[RawTerm] =
+  lazy val funOrExpr2: Parser[RawTerm] =
     expr2 ~ opt(tok("->") ~> expr1) ^^ {
       case e ~ None       => e
       case e ~ Some(body) => RawTerm.Pi(Icity.Explicit, RawTerm.Lam(Icity.Explicit, "_", e, body))
@@ -250,7 +251,7 @@ private[cubical] class CubicalParser extends PackratParsers {
    *   - an implicit application (`{expr}`)
    *   - a path application (`@ formula`)
    */
-  lazy val expr2: PackratParser[RawTerm] =
+  lazy val expr2: Parser[RawTerm] =
     atomExpr ~ rep(
       tok("{") ~> expr <~ tok("}") ^^ (arg => Left((Icity.Implicit, arg))) |
       atomExpr ^^ (arg => Left((Icity.Explicit, arg))) |
@@ -263,7 +264,7 @@ private[cubical] class CubicalParser extends PackratParsers {
         }
     }
 
-  lazy val atomExpr: PackratParser[RawTerm] =
+  lazy val atomExpr: Parser[RawTerm] =
     baseAtomExpr ~ rep(elem(".1", _ == ".1") | elem(".2", _ == ".2")) ^^ {
       case e ~ projs => projs.foldLeft(e) {
         case (acc, ".1") => RawTerm.Fst(acc)
@@ -272,82 +273,82 @@ private[cubical] class CubicalParser extends PackratParsers {
       }
     }
 
-  lazy val baseAtomExpr: PackratParser[RawTerm] =
+  lazy val baseAtomExpr: Parser[RawTerm] =
     uExpr | pathPExpr | compExpr | fillExpr |
     glueTypeExpr | glueElemExpr | unglueElemExpr |
     idTypeExpr | idPairExpr | idJExpr |
     transportExpr | holeExpr | pairExpr | identExpr | parenExpr
 
-  lazy val uExpr: PackratParser[RawTerm] = kw("U") ^^^ RawTerm.U
+  lazy val uExpr: Parser[RawTerm] = kw("U") ^^^ RawTerm.U
 
-  lazy val pathPExpr: PackratParser[RawTerm] =
+  lazy val pathPExpr: Parser[RawTerm] =
     kw("PathP") ~> atomExpr ~ atomExpr ~ atomExpr ^^ {
       case a ~ u ~ v => RawTerm.PathP(a, u, v)
     }
 
-  lazy val compExpr: PackratParser[RawTerm] =
+  lazy val compExpr: Parser[RawTerm] =
     kw("comp") ~> atomExpr ~ atomExpr ~ system ^^ {
       case ty ~ base ~ sys => RawTerm.Comp(ty, base, sys)
     }
 
-  lazy val fillExpr: PackratParser[RawTerm] =
+  lazy val fillExpr: Parser[RawTerm] =
     kw("fill") ~> atomExpr ~ atomExpr ~ system ^^ {
       case ty ~ base ~ sys => RawTerm.Fill(ty, base, sys)
     }
 
-  lazy val glueTypeExpr: PackratParser[RawTerm] =
+  lazy val glueTypeExpr: Parser[RawTerm] =
     kw("Glue") ~> atomExpr ~ system ^^ {
       case base ~ sys => RawTerm.Glue(base, sys)
     }
 
-  lazy val glueElemExpr: PackratParser[RawTerm] =
+  lazy val glueElemExpr: Parser[RawTerm] =
     kw("glue") ~> atomExpr ~ system ^^ {
       case base ~ sys => RawTerm.GlueElem(base, sys)
     }
 
-  lazy val unglueElemExpr: PackratParser[RawTerm] =
+  lazy val unglueElemExpr: Parser[RawTerm] =
     kw("unglue") ~> atomExpr ~ system ^^ {
       case base ~ sys => RawTerm.UnGlueElem(base, sys)
     }
 
-  lazy val idTypeExpr: PackratParser[RawTerm] =
+  lazy val idTypeExpr: Parser[RawTerm] =
     kw("Id") ~> atomExpr ~ atomExpr ~ atomExpr ^^ {
       case ty ~ u ~ v => RawTerm.Id(ty, u, v)
     }
 
-  lazy val idPairExpr: PackratParser[RawTerm] =
+  lazy val idPairExpr: Parser[RawTerm] =
     kw("idC") ~> atomExpr ~ system ^^ {
       case w ~ sys => RawTerm.IdPair(w, sys)
     }
 
-  lazy val idJExpr: PackratParser[RawTerm] =
+  lazy val idJExpr: Parser[RawTerm] =
     kw("idJ") ~> atomExpr ~ atomExpr ~ atomExpr ~ atomExpr ~ atomExpr ~ atomExpr ^^ {
       case a ~ t ~ c ~ d ~ x ~ p => RawTerm.IdJ(a, t, c, d, x, p)
     }
 
-  lazy val transportExpr: PackratParser[RawTerm] =
+  lazy val transportExpr: Parser[RawTerm] =
     kw("transport") ~> atomExpr ~ atomExpr ^^ {
       case ty ~ base => RawTerm.Comp(ty, base, Map.empty)
     }
 
-  lazy val holeExpr: PackratParser[RawTerm] =
+  lazy val holeExpr: Parser[RawTerm] =
     holeIdent ^^ { _ => RawTerm.Hole(freshLoc()) }
 
-  lazy val pairExpr: PackratParser[RawTerm] =
+  lazy val pairExpr: Parser[RawTerm] =
     tok("(") ~> expr ~ (tok(",") ~> rep1sep(expr, tok(","))) <~ tok(")") ^^ {
       case e ~ es => (e :: es).reduceRight(RawTerm.Pair.apply)
     }
 
-  lazy val identExpr: PackratParser[RawTerm] =
+  lazy val identExpr: Parser[RawTerm] =
     ident >> { name =>
       (tok("{") ~> expr <~ tok("}") ^^ { arg => RawTerm.App(Icity.Implicit, RawTerm.Var(name), arg) }) |
       success(RawTerm.Var(name))
     }
 
-  lazy val parenExpr: PackratParser[RawTerm] =
+  lazy val parenExpr: Parser[RawTerm] =
     tok("(") ~> expr <~ tok(")")
 
-  def branch: PackratParser[RawBranch] =
+  def branch: Parser[RawBranch] =
     ident ~ rep(ident) >> { case ctor ~ args =>
       (tok("@") ~> rep1(ident) >> { dims =>
         tok("->") ~> expWhere ^^ { body =>
@@ -357,26 +358,26 @@ private[cubical] class CubicalParser extends PackratParsers {
       (tok("->") ~> expWhere ^^ { body => RawBranch.OrdinaryBranch(ctor, args, body) })
     }
 
-  def expWhere: PackratParser[RawTerm] =
+  def expWhere: Parser[RawTerm] =
     expr ~ opt(kw("where") ~> tok("{") ~> rawDeclsBlock <~ tok("}")) ^^ {
       case e ~ None        => e
       case e ~ Some(decls) => RawTerm.Where(e, decls)
     }
 
-  def rawDeclsBlock: PackratParser[List[RawDecl]] =
+  def rawDeclsBlock: Parser[List[RawDecl]] =
     repsep(rawDecl, tok(";"))
 
-  def rawDecl: PackratParser[RawDecl] =
+  def rawDecl: Parser[RawDecl] =
     rawDeclTransparentAll | rawDeclOpaque | rawDeclTransparent |
     rawDeclMutual | rawDeclData | rawDeclHData |
     rawDeclTyped
 
-  lazy val rawDeclTyped: PackratParser[RawDecl] =
+  lazy val rawDeclTyped: Parser[RawDecl] =
     ident ~ rawTele ~ (tok(":") ~> expr) ~ (tok("=") ~> rawDeclTypedRhs) ^^ {
       case name ~ tele ~ ty ~ rhs => rhs(name, tele, ty)
     }
 
-  private def rawDeclTypedRhs: PackratParser[(String, List[(List[String], RawTerm)], RawTerm) => RawDecl] =
+  private def rawDeclTypedRhs: Parser[(String, List[(List[String], RawTerm)], RawTerm) => RawDecl] =
     (kw("split") ~> tok("{") ~> repsep(branch, tok(";")) <~ tok("}") ^^ {
       branches => (name: String, tele: List[(List[String], RawTerm)], ty: RawTerm) =>
         RawDecl.Split(name, tele, ty, branches)
@@ -388,42 +389,42 @@ private[cubical] class CubicalParser extends PackratParsers {
       body => (name: String, tele: List[(List[String], RawTerm)], ty: RawTerm) => RawDecl.Def(name, tele, ty, body)
     })
 
-  def rawDeclData: PackratParser[RawDecl] =
+  def rawDeclData: Parser[RawDecl] =
     kw("data") ~> ident ~ rawTele ~ (tok("=") ~> repsep(rawLabel, tok("|"))) ^^ {
       case name ~ tele ~ labels => RawDecl.Data(name, tele, labels)
     }
 
-  def rawDeclHData: PackratParser[RawDecl] =
+  def rawDeclHData: Parser[RawDecl] =
     kw("hdata") ~> ident ~ rawTele ~ (tok("=") ~> repsep(rawLabel, tok("|"))) ^^ {
       case name ~ tele ~ labels => RawDecl.HData(name, tele, labels)
     }
 
-  def rawDeclMutual: PackratParser[RawDecl] =
+  def rawDeclMutual: Parser[RawDecl] =
     kw("mutual") ~> tok("{") ~> repsep(rawDecl, tok(";")) <~ tok("}") ^^ {
       decls => RawDecl.Mutual(decls)
     }
 
-  def rawDeclOpaque: PackratParser[RawDecl] =
+  def rawDeclOpaque: Parser[RawDecl] =
     kw("opaque") ~> ident ^^ { name => RawDecl.Opaque(name) }
 
-  def rawDeclTransparent: PackratParser[RawDecl] =
+  def rawDeclTransparent: Parser[RawDecl] =
     kw("transparent") ~> ident ^^ { name => RawDecl.Transparent(name) }
 
-  def rawDeclTransparentAll: PackratParser[RawDecl] =
+  def rawDeclTransparentAll: Parser[RawDecl] =
     kw("transparent_all") ^^^ RawDecl.TransparentAll
 
-  def rawExpWhere: PackratParser[RawExpWhere] =
+  def rawExpWhere: Parser[RawExpWhere] =
     expr ~ opt(kw("where") ~> tok("{") ~> rawDeclsBlock <~ tok("}")) ^^ {
       case e ~ None        => RawExpWhere.NoWhere(e)
       case e ~ Some(decls) => RawExpWhere.Where(e, decls)
     }
 
-  def rawTele: PackratParser[List[(List[String], RawTerm)]] =
+  def rawTele: Parser[List[(List[String], RawTerm)]] =
     rep(tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
       case names ~ ty => (names, ty)
     })
 
-  def rawLabel: PackratParser[RawLabel] =
+  def rawLabel: Parser[RawLabel] =
     ident ~ rawTele >> { case name ~ tele =>
       (tok("<") ~> rep1(ident) <~ tok(">")) ~ system ^^ {
         case dims ~ sys => RawLabel.PathLabel(name, tele, dims, sys)
