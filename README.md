@@ -1,4 +1,4 @@
-# cubicaltt-scala
+# Cubical Type Theory (Scala3 Implementation)
 
 A Scala 3 implementation of [Cubical Type Theory](https://arxiv.org/abs/1611.02108) (CCHM), ported from Anders Mörtberg's [Haskell implementation](https://github.com/mortberg/cubicaltt). It is fully compatible with the original `.ctt` syntax and extends it with **metavariables** and **implicit arguments**.
 
