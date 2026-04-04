@@ -49,7 +49,7 @@ object TypeCheckSpec {
   def checkFile(file: File, searchDirs: List[File]): Unit = {
     val (_, _, modules) = loadModules(file.getPath, searchDirs = searchDirs)
     val allDecls = modules.flatMap(_.declarations)
-    val (maybeErr, _) = Elaborator.elaborateDeclss(TypeEnv.silentEnv, allDecls)
+    val (maybeErr, _) = Elaborator.elaborateDeclss(TypeEnv.empty, allDecls)
     maybeErr.foreach { err =>
       throw new AssertionError(s"Type check error: $err")
     }

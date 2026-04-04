@@ -32,13 +32,13 @@ object Main {
     files match {
       case Nil =>
         println("cubicaltt-scala — Cubical Type Theory in Scala 3")
-        repl(options, "", Nil, if (options.verbose) TypeEnv.verboseEnv else TypeEnv.silentEnv)
+        repl(options, "", Nil, TypeEnv.empty)
       case f :: Nil =>
         val file = new File(f)
         if (!file.exists()) {
           println(s"Error: file '$f' not found")
           println("Launching REPL...")
-          repl(options, "", Nil, if (options.verbose) TypeEnv.verboseEnv else TypeEnv.silentEnv)
+          repl(options, "", Nil, TypeEnv.empty)
         } else {
           println(s"cubicaltt-scala — Loading $f")
           initLoop(options, f)
@@ -154,12 +154,24 @@ object Main {
         println(s"Warning: the following definitions were shadowed [${duplicates.mkString(", ")}]")
       }
 
-      val startEnv = if (options.verbose) TypeEnv.verboseEnv else TypeEnv.silentEnv
-      val (merr, tenv) = Elaborator.elaborateDeclss(startEnv, allDecls)
+      val (merr, tenv) = Elaborator.elaborateDeclss(TypeEnv.empty, allDecls)
       merr match {
         case Some(err) => println(s"Type checking failed: $err")
         case None =>
-          if (modules.nonEmpty) println("File loaded.")
+          if (modules.nonEmpty) {
+            println("File loaded.")
+            if (options.verbose) {
+              for (decls <- allDecls) decls match {
+                case Declarations.MutualDecls(_, ds) =>
+                  for ((name, (ty, body)) <- ds) {
+                    val tyVal = Eval.eval(ty, tenv.env)
+                    val bodyVal = Eval.eval(body, tenv.env)
+                    println(s"  $name : $tyVal = $bodyVal")
+                  }
+                case _ =>
+              }
+            }
+          }
       }
 
       if (options.repl && !options.batch) {

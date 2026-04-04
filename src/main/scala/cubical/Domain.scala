@@ -15,6 +15,59 @@ import scala.collection.immutable.Set
  *     `VSplit`, `VApp`, `VAppFormula`, `VIdJ`
  */
 enum Val {
+  private def parens(cond: Boolean, s: String): String = if (cond) s"($s)" else s
+
+  
+  private def formatSystem(sys: System[Val]): String = {
+    if (sys.isEmpty) "[]"
+    else {
+      val parts = sys.toList.map { case (alpha, u) => s"${Face.showFace(alpha)} ↦ $u" }
+      "[ " + parts.mkString(", ") + " ]"
+    }
+  }
+
+  
+  private def format(prec: Int): String = this match {
+    case VU => "𝒰"
+    case Closure(term, _) => term.toString
+    case VPi(Icity.Implicit, domain, Closure(Term.Lam(_, x, _, body), _)) =>
+      parens(prec > 0, s"Π {$x : ${domain}} → ${body}")
+    case VPi(_, domain, Closure(Term.Lam(_, x, _, body), _)) if x == "_" =>
+      parens(prec > 1, s"${domain.format(2)} → ${body}")
+    case VPi(_, domain, codomain) =>
+      parens(prec > 0, s"Π ${domain.format(3)} ${codomain.format(3)}")
+    case VSigma(fstTy, Closure(Term.Lam(_, x, _, body), _)) if x == "_" =>
+      parens(prec > 1, s"${fstTy.format(2)} × ${body}")
+    case VSigma(fstTy, sndTy) => parens(prec > 0, s"Σ ${fstTy.format(3)} ${sndTy.format(3)}")
+    case VPair(a, b) => s"⟨${a}, ${b}⟩"
+    case VMeta(id) => s"?$id"
+    case VCon(c, Nil) => c
+    case VCon(c, args) => parens(prec > 2, s"$c ${args.map(_.format(3)).mkString(" ")}")
+    case VPCon(c, _dataType, args, phis) =>
+      parens(prec > 2, (c :: (args.map(_.format(3)) ++ phis.map(_.toString))).mkString(" "))
+    case VPathP(pathTy, left, right) => parens(prec > 2, s"PathP ${pathTy.format(3)} ${left.format(3)} ${right.format(3)}")
+    case VPLam(dim, body) => parens(prec > 0, s"λ̂ ${dim.value}. ${body}")
+    case VComp(ty, base, sys) => parens(prec > 2, s"comp ${ty.format(3)} ${base.format(3)} ${formatSystem(sys)}")
+    case VGlue(base, sys) => parens(prec > 2, s"Glue ${base.format(3)} ${formatSystem(sys)}")
+    case VGlueElem(base, sys) => parens(prec > 2, s"glue ${base.format(3)} ${formatSystem(sys)}")
+    case VUnGlueElem(base, sys) => parens(prec > 2, s"unglue ${base.format(3)} ${formatSystem(sys)}")
+    case VCompU(base, sys) => parens(prec > 2, s"compU ${base.format(3)} ${formatSystem(sys)}")
+    case VHComp(ty, base, sys) => parens(prec > 2, s"hComp ${ty.format(3)} ${base.format(3)} ${formatSystem(sys)}")
+    case VId(ty, l, r) => parens(prec > 2, s"Id ${ty.format(3)} ${l.format(3)} ${r.format(3)}")
+    case VIdPair(w, sys) => parens(prec > 2, s"idC ${w.format(3)} ${formatSystem(sys)}")
+    case VVar(name, _) => name
+    case VOpaque(name, _) => s"@$name"
+    case VFst(p) => s"${p.format(3)}.1"
+    case VSnd(p) => s"${p.format(3)}.2"
+    case VSplit(f, arg) => parens(prec > 2, s"${f.format(2)} ${arg.format(3)}")
+    case VApp(f, arg) => parens(prec > 2, s"${f.format(2)} ${arg.format(3)}")
+    case VAppFormula(path, phi) => parens(prec > 2, s"${path.format(2)} @ ${phi}")
+    case VLam(x, domain, body) => parens(prec > 0, s"λ $x. ${body}")
+    case VUnGlueElemU(equiv, base, sys) => parens(prec > 2, s"unglueU ${equiv.format(3)} ${base.format(3)} ${formatSystem(sys)}")
+    case VIdJ(a, l, mot, refl, r, p) => parens(prec > 2, s"idJ ${a.format(3)} ${l.format(3)} ${mot.format(3)} ${refl.format(3)} ${r.format(3)} ${p.format(3)}")
+  }
+
+  override def toString: String = format(0)
   case VU
   case Closure(term: Term, env: Environment)
   case VPi(icity: Icity, domain: Type, codomain: Type)

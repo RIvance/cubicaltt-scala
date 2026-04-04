@@ -212,6 +212,60 @@ enum Term {
   case Id(ty: Term, left: Term, right: Term)
   case IdPair(witness: Term, sys: System[Term])
   case IdJ(ty: Term, left: Term, mot: Term, refl: Term, right: Term, path: Term)
+
+  // Pretty-printer helpers (precedence-aware, inlined into the enum)
+  private def parens(cond: Boolean, s: String): String = if (cond) s"($s)" else s
+
+  private def formatSystem(sys: System[Term]): String = if (sys.isEmpty) "[]" else "[ " + sys.toList.map { case (alpha, u) => s"${Face.showFace(alpha)} ↦ $u" }.mkString(", ") + " ]"
+
+  private def format(prec: Int): String = this match {
+    case U => "𝒰"
+    case Var(x) => x
+    case App(_, _, _) => {
+      val (head, args) = Term.unApps(this)
+      val ppArgs = args.map {
+        case (Icity.Implicit, a) => s"{$a}"
+        case (Icity.Explicit, a) => a.format(3)
+      }
+      parens(prec > 2, (head.format(2) :: ppArgs).mkString(" "))
+    }
+    case Pi(_, Lam(_, x, a, b)) if x == "_" => parens(prec > 1, s"${a.format(2)} → ${b.format(0)}")
+    case Pi(Icity.Implicit, Lam(_, x, a, b)) => parens(prec > 0, s"Π {$x : $a} → ${b.format(0)}")
+    case Pi(_, Lam(_, x, a, b)) => parens(prec > 0, s"Π ($x : $a) → ${b.format(0)}")
+    case Pi(_, body) => parens(prec > 0, s"Π ${body.format(3)}")
+    case Lam(Icity.Implicit, x, a, b) => parens(prec > 0, s"λ {$x : $a}. ${b.format(0)}")
+    case Lam(_, x, a, b) => parens(prec > 0, s"λ ($x : $a). ${b.format(0)}")
+    case Where(body, decls) => parens(prec > 0, s"${body.format(0)} where ...")
+    case Meta(id) => s"?$id"
+    case Sigma(Lam(_, x, a, b)) if x == "_" => parens(prec > 1, s"${a.format(2)} × ${b.format(1)}")
+    case Sigma(Lam(_, x, a, b)) => parens(prec > 0, s"Σ ($x : $a) × ${b.format(0)}")
+    case Sigma(body) => parens(prec > 0, s"Σ ${body.format(3)}")
+    case Pair(fst, snd) => s"⟨$fst, $snd⟩"
+    case Fst(pair) => s"${pair.format(3)}.1"
+    case Snd(pair) => s"${pair.format(3)}.2"
+    case Con(name, Nil) => name
+    case Con(name, args) => parens(prec > 2, s"$name ${args.map(_.format(3)).mkString(" ")}")
+    case PCon(name, dataType, args, phis) => parens(prec > 2, (name :: (args.map(_.format(3)) ++ phis.map(_.toString))).mkString(" "))
+    case Split(name, _, ty, branches) => parens(prec > 2, s"split { ... }")
+    case Sum(_, name, labels) => parens(prec > 2, s"sum { ... }")
+    case HSum(_, name, labels) => parens(prec > 2, s"hsum { ... }")
+    case Undef(_, ty) => "undefined"
+    case Hole(_) => "_"
+    case PathP(pathTy, left, right) => parens(prec > 2, s"PathP ${pathTy.format(3)} ${left.format(3)} ${right.format(3)}")
+    case PLam(dim, body) => parens(prec > 0, s"λ̂ ${dim.value}. ${body.format(0)}")
+    case AppFormula(path, phi) => parens(prec > 2, s"${path.format(2)} @ $phi")
+    case Comp(ty, base, sys) => parens(prec > 2, s"comp ${ty.format(3)} ${base.format(3)} ${formatSystem(sys)}")
+    case Fill(ty, base, sys) => parens(prec > 2, s"fill ${ty.format(3)} ${base.format(3)} ${formatSystem(sys)}")
+    case HComp(ty, base, sys) => parens(prec > 2, s"hComp ${ty.format(3)} ${base.format(3)} ${formatSystem(sys)}")
+    case Glue(base, sys) => parens(prec > 2, s"Glue ${base.format(3)} ${formatSystem(sys)}")
+    case GlueElem(base, sys) => parens(prec > 2, s"glue ${base.format(3)} ${formatSystem(sys)}")
+    case UnGlueElem(base, sys) => parens(prec > 2, s"unglue ${base.format(3)} ${formatSystem(sys)}")
+    case Id(ty, left, right) => parens(prec > 2, s"Id ${ty.format(3)} ${left.format(3)} ${right.format(3)}")
+    case IdPair(w, sys) => parens(prec > 2, s"idC ${w.format(3)} ${formatSystem(sys)}")
+    case IdJ(ty, left, mot, refl, right, path) => parens(prec > 2, s"idJ ${ty.format(3)} ${left.format(3)} ${mot.format(3)} ${refl.format(3)} ${right.format(3)} ${path.format(3)}")
+  }
+
+  override def toString: String = format(0)
 }
 
 object Term {

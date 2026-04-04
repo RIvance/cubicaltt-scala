@@ -170,23 +170,17 @@ enum Formula {
   case And(phi: Formula, psi: Formula)
   case Or(phi: Formula, psi: Formula)
 
-  override def toString: String = this match {
-    case Formula.Dir(d)       => d.toString
-    case Formula.Atom(n)      => n.toString
-    case Formula.NegAtom(n)   => s"-$n"
-    case Formula.Or(a, b)     =>
-      def show1(v: Formula): String = v match {
-        case Formula.And(_, _) => s"($v)"
-        case _                 => v.toString
-      }
-      s"${show1(a)} \\/ ${show1(b)}"
-    case Formula.And(a, b)    =>
-      def show1(v: Formula): String = v match {
-        case Formula.Or(_, _) => s"($v)"
-        case _                => v.toString
-      }
-      s"${show1(a)} /\\ ${show1(b)}"
+  private def parens(cond: Boolean, s: String): String = if (cond) s"($s)" else s
+
+  private def format(prec: Int): String = this match {
+    case Formula.Dir(d)     => d.toString
+    case Formula.Atom(n)    => n.value
+    case Formula.NegAtom(n) => s"¬${n.value}"
+    case Formula.And(a, b)  => parens(prec > 1, s"${a.format(1)} ∧ ${b.format(2)}")
+    case Formula.Or(a, b)   => parens(prec > 0, s"${a.format(0)} ∨ ${b.format(1)}")
   }
+
+  override def toString: String = format(0)
 }
 
 object Formula {

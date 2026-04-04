@@ -11,13 +11,11 @@ case class TypeCheckError(msg: String) extends RuntimeException(msg)
 case class TypeEnv(
   names: List[String],
   indent: Int,
-  env: Environment,
-  verbose: Boolean
+  env: Environment
 )
 
 object TypeEnv {
-  val verboseEnv: TypeEnv = TypeEnv(Nil, 0, Environment.empty, verbose = true)
-  val silentEnv: TypeEnv = TypeEnv(Nil, 0, Environment.empty, verbose = false)
+  val empty: TypeEnv = TypeEnv(Nil, 0, Environment.empty)
 }
 
 object TypeChecker {
@@ -65,7 +63,6 @@ object TypeChecker {
       n :: typeEnv.names,
       typeEnv.indent,
       Environment.update((x, freshVar), typeEnv.env),
-      typeEnv.verbose
     )
   }
 
@@ -86,7 +83,6 @@ object TypeChecker {
       newNames ++ typeEnv.names,
       typeEnv.indent,
       Environment.updateAll(branchVars, typeEnv.env),
-      typeEnv.verbose
     )
   }
 
@@ -149,12 +145,7 @@ object TypeChecker {
   def check(expectedType: Type, t: Term, typeEnv: TypeEnv): Unit = (expectedType, t) match {
     case (_, Term.Undef(_, _)) => ()
 
-    case (_, Term.Hole(l)) =>
-      val e = Environment.contextOfEnv(typeEnv.env).reverse.mkString("\n")
-      val ns = typeEnv.names
-      if (typeEnv.verbose) {
-        println(s"\nHole at $l:\n\n$e${"—" * 80}\n${Eval.normal(ns, expectedType)}\n")
-      }
+    case (_, Term.Hole(l)) => ()
 
     case (_, Term.Con(label, args)) =>
       val (labelTele, closureEnv) = getLabelType(label, expectedType, typeEnv)
@@ -291,12 +282,11 @@ object TypeChecker {
     case Declarations.MutualDecls(loc, declPairs) =>
       val idents = Declarations.declIdents(declPairs)
       val tele   = Declarations.declTelescope(declPairs)
-      val ters   = Declarations.declTerms(declPairs)
+      val terms  = Declarations.declTerms(declPairs)
       val indentLevel = typeEnv.indent
-      if (typeEnv.verbose) println(" " * indentLevel + "Checking: " + idents.mkString(" "))
       checkTele(tele, typeEnv)
       val typeEnv2 = addDecls(Declarations.MutualDecls(loc, declPairs), typeEnv)
-      checks(tele, typeEnv2.env, ters, typeEnv2)
+      checks(tele, typeEnv2.env, terms, typeEnv2)
     case Declarations.OpaqueDecl(_)       => ()
     case Declarations.TransparentDecl(_)  => ()
     case Declarations.TransparentAllDecl  => ()
