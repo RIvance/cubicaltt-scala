@@ -1,0 +1,26 @@
+-- Tests for implicit arguments
+-- Verifies the elaboration pipeline for implicit argument insertion
+module list_implicit where
+
+import prelude
+
+-- identity function with implicit type parameter
+idfunI : {A : U} -> A -> A = \{A : U} (x : A) -> x
+
+-- constant function with two implicit type parameters
+constI : {A : U} -> {B : U} -> A -> B -> A = \{A : U} {B : U} (x : A) (y : B) -> x
+
+-- Test: implicit arg inferred from return type
+testId : Unit = idfunI tt
+
+-- Test: explicit implicit arg via {expr} syntax
+testExplicit : Unit = idfunI {Unit} tt
+
+-- Test: implicit function applied to a path
+testIdPath : Path Unit tt tt = idfunI (refl Unit tt)
+
+-- Test: A inferred from return type, B given explicitly
+testConst : Unit = constI {Unit} {Unit} tt tt
+
+-- Test: nested implicit applications — both inferred from return type
+testNested : Unit = idfunI (idfunI tt)

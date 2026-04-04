@@ -124,7 +124,7 @@ object Eval {
     def support(v: Val): List[Name] = v match {
       case VU                     => Nil
       case Closure(_, e)          => Nominal.support(e)
-      case VPi(u, v)              => Nominal.support((u, v))
+      case VPi(_, u, v)           => Nominal.support((u, v))
       case VComp(a, u, ts)        => Nominal.support((a, u, ts))
       case VPathP(a, v0, v1)      => Nominal.support((a, v0, v1))
       case VPLam(i, v)            => Nominal.support(v).filter(_ != i)
@@ -149,6 +149,7 @@ object Eval {
       case VIdPair(u, us)         => Nominal.support((u, us))
       case VId(a, u, v)           => Nominal.support((a, u, v))
       case VIdJ(a, u, c, d, x, p) => Nominal.support((a, u, c, d, x, p))
+      case VMeta(_) => Nil
     }
 
     def act(u: Val, iphi: (Name, Formula)): Val = {
@@ -159,7 +160,7 @@ object Eval {
       u match {
         case VU              => VU
         case Closure(t, e)   => Closure(t, acti(e))
-        case VPi(a, f)       => VPi(acti(a), acti(f))
+        case VPi(icity, a, f)    => VPi(icity, acti(a), acti(f))
         case VComp(a, v, ts) => compLine(acti(a), acti(v), acti(ts))
         case VPathP(a, u, v) => VPathP(acti(a), acti(u), acti(v))
         case VPLam(j, v) =>
@@ -191,6 +192,7 @@ object Eval {
         case VId(a, u, v)             => VId(acti(a), acti(u), acti(v))
         case VIdJ(a, u, c, d, x, p)   =>
           idJ(acti(a), acti(u), acti(c), acti(d), acti(x), acti(p))
+        case VMeta(_) => u
       }
     }
 
@@ -199,7 +201,7 @@ object Eval {
       u match {
         case VU                       => VU
         case Closure(t, e)            => Closure(t, sw(e))
-        case VPi(a, f)                => VPi(sw(a), sw(f))
+        case VPi(icity, a, f)         => VPi(icity, sw(a), sw(f))
         case VComp(a, v, ts)          => VComp(sw(a), sw(v), sw(ts))
         case VPathP(a, u, v)          => VPathP(sw(a), sw(u), sw(v))
         case VPLam(k, v)              => VPLam(Name.swapName(k, ij._1, ij._2), sw(v))
@@ -225,6 +227,7 @@ object Eval {
         case VId(a, u, v)             => VId(sw(a), sw(u), sw(v))
         case VIdJ(a, u, c, d, x, p)   =>
           VIdJ(sw(a), sw(u), sw(c), sw(d), sw(x), sw(p))
+        case VMeta(_) => u
       }
     }
   }
@@ -244,12 +247,12 @@ object Eval {
     val opaqueSet = env.opaques.value
     t match {
       case Term.U => VU
-      case Term.App(r, s) => app(eval(r, env), eval(s, env))
+      case Term.App(_, r, s) => app(eval(r, env), eval(s, env))
       case Term.Var(x) =>
         if (opaqueSet.contains(x)) VOpaque(x, lookupType(x, env))
         else lookupVal(x, env)
-      case Term.Pi(lam @ Term.Lam(_, a, _)) => VPi(eval(a, env), Closure(lam, env))
-      case Term.Sigma(lam @ Term.Lam(_, a, _)) => VSigma(eval(a, env), Closure(lam, env))
+      case Term.Pi(icity, lam @ Term.Lam(_, _, a, _)) => VPi(icity, eval(a, env), Closure(lam, env))
+      case Term.Sigma(lam @ Term.Lam(_, _, a, _)) => VSigma(eval(a, env), Closure(lam, env))
       case Term.Pair(a, b) => VPair(eval(a, env), eval(b, env))
       case Term.Fst(a) => fstVal(eval(a, env))
       case Term.Snd(a) => sndVal(eval(a, env))
@@ -257,7 +260,7 @@ object Eval {
       case Term.Con(name, ts) => VCon(name, ts.map(eval(_, env)))
       case Term.PCon(name, a, ts, phis) =>
         pcon(name, eval(a, env), ts.map(eval(_, env)), phis.map(evalFormula(env, _)))
-      case t @ Term.Lam(_, _, _)       => Closure(t, env)
+      case t @ Term.Lam(_, _, _, _)       => Closure(t, env)
       case t @ Term.Split(_, _, _, _)   => Closure(t, env)
       case t @ Term.Sum(_, _, _)        => Closure(t, env)
       case t @ Term.HSum(_, _, _)       => Closure(t, env)
@@ -282,6 +285,7 @@ object Eval {
       case Term.IdJ(a, t, c, d, x, p) =>
         idJ(eval(a, env), eval(t, env), eval(c, env),
             eval(d, env), eval(x, env), eval(p, env))
+      case Term.Meta(_) => throw EvalError("Cannot evaluate unsolved meta")
       case _ => throw EvalError(s"Cannot evaluate $t")
     }
   }
@@ -329,7 +333,7 @@ object Eval {
    * Returns `VApp(u, v)` when `u` is neutral (stuck).
    */
   def app(u: Val, v: Val): Val = (u, v) match {
-    case (Closure(Term.Lam(x, _, t), e), _) =>
+    case (Closure(Term.Lam(_, x, _, t), e), _) =>
       eval(t, Environment.update((x, v), e))
     case (Closure(Term.Split(_, _, _, branches), e), VCon(c, vs)) =>
       Branch.lookupBranch(c, branches) match {
@@ -345,7 +349,7 @@ object Eval {
       }
     case (Closure(Term.Split(_, _, ty, _), e), VHComp(a, w, ws)) =>
       eval(ty, e) match {
-        case VPi(_, f) =>
+        case VPi(_, _, f) =>
           val j = Nominal.fresh((e, v))
           val systemAtJ = ws.map { case (alpha, uAlpha) => alpha -> appFormula(uAlpha, Formula.Atom(j)) }
           val appliedValue = app(u, w)
@@ -356,7 +360,7 @@ object Eval {
         case _ => throw EvalError(s"app: Split annotation not a Pi type $u")
       }
     case (Closure(Term.Split(_, _, _, _), _), _) if Val.isNeutral(v) => VSplit(u, v)
-    case (VComp(VPLam(i, VPi(a, f)), li0, ts), vi1) =>
+    case (VComp(VPLam(i, VPi(_, a, f)), li0, ts), vi1) =>
       val j = Nominal.fresh((u, vi1))
       val (aj, fj) = (Nominal.swap(a, (i, j)), Nominal.swap(f, (i, j)))
       val sysAtJ = ts.map { case (alpha, tAlpha) => alpha -> appFormula(tAlpha, Formula.Atom(j)) }
@@ -416,11 +420,11 @@ object Eval {
       case ty => throw EvalError(s"inferType: expected Sigma type for $v, got $ty")
     }
     case VSplit(s @ Closure(Term.Split(_, _, t, _), env), v1) => eval(t, env) match {
-      case VPi(_, f) => app(f, v1)
+      case VPi(_, _, f) => app(f, v1)
       case ty => throw EvalError(s"inferType: Pi type expected for split in $v, got $ty")
     }
     case VApp(t0, t1) => inferType(t0) match {
-      case VPi(_, f) => app(f, t1)
+      case VPi(_, _, f) => app(f, t1)
       case ty => throw EvalError(s"inferType: expected Pi type for $v, got $ty")
     }
     case VAppFormula(t, phi) => inferType(t) match {
@@ -516,7 +520,7 @@ object Eval {
         val composedFirstComponent  = comp(i, sa, firstComponent, firstComponentSystems)
         val composedSecondComponent = comp(i, app(f, filledFirstComponent), secondComponent, secondComponentSystems)
         VPair(composedFirstComponent, composedSecondComponent)
-      case VPi(_, _) =>
+      case VPi(_, _, _) =>
         VComp(VPLam(i, ty), u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
       case VU =>
         compUniv(u, faceVals.map { case (alpha, tAlpha) => alpha -> VPLam(i, tAlpha) })
@@ -936,7 +940,7 @@ object Eval {
     val env = Environment.updateAll(
       List(("a", baseType), ("x", center), ("f", equivFun(equiv)), ("t", equivDom(equiv))),
       Environment.empty)
-    eval(Term.Sigma(Term.Lam("y", tt, Term.PathP(Term.PLam(Name("_"), ta), tx, Term.App(tf, ty)))), env)
+    eval(Term.Sigma(Term.Lam(Icity.Explicit, "y", tt, Term.PathP(Term.PLam(Name("_"), ta), tx, Term.App(Icity.Explicit, tf, ty)))), env)
   }
 
   def pathComp(i: Name, ty: Type, baseVal: Val, endVal: Val, faceVals: System[Val]): Val = {
@@ -1080,13 +1084,13 @@ object Eval {
     if (u == v) return true
     val j = Nominal.fresh((u, v))
     (u, v) match {
-      case (Closure(Term.Lam(x, a, u1), e), Closure(Term.Lam(x2, a2, u2), e2)) =>
+      case (Closure(Term.Lam(_, x, a, u1), e), Closure(Term.Lam(_, x2, a2, u2), e2)) =>
         val w @ VVar(n, _) = mkVarNice(ns, x, eval(a, e)): @unchecked
         convert(n :: ns, eval(u1, Environment.update((x, w), e)), eval(u2, Environment.update((x2, w), e2)))
-      case (Closure(Term.Lam(x, a, u1), e), u2) =>
+      case (Closure(Term.Lam(_, x, a, u1), e), u2) =>
         val w @ VVar(n, _) = mkVarNice(ns, x, eval(a, e)): @unchecked
         convert(n :: ns, eval(u1, Environment.update((x, w), e)), app(u2, w))
-      case (u1, Closure(Term.Lam(x, a, u2), e)) =>
+      case (u1, Closure(Term.Lam(_, x, a, u2), e)) =>
         val w @ VVar(n, _) = mkVarNice(ns, x, eval(a, e)): @unchecked
         convert(n :: ns, app(u1, w), eval(u2, Environment.update((x, w), e)))
       case (Closure(Term.Split(_, p, _, _), e), Closure(Term.Split(_, p2, _, _), e2)) =>
@@ -1099,7 +1103,7 @@ object Eval {
         p == p2 && convertEnv(ns, e, e2)
       case (Closure(Term.Hole(p), e), Closure(Term.Hole(p2), e2)) =>
         p == p2 && convertEnv(ns, e, e2)
-      case (VPi(u1, v1), VPi(u2, v2)) =>
+      case (VPi(_, u1, v1), VPi(_, u2, v2)) =>
         val w @ VVar(n, _) = mkVarNice(ns, "X", u1): @unchecked
         convert(ns, u1, u2) && convert(n :: ns, app(v1, w), app(v2, w))
       case (VSigma(u1, v1), VSigma(u2, v2)) =>
@@ -1157,6 +1161,7 @@ object Eval {
         convert(ns, a, a2) && convert(ns, u1, u2) && convert(ns, v1, v2)
       case (VIdJ(a, u1, c, d, x, p), VIdJ(a2, u2, c2, d2, x2, p2)) =>
         convertList(ns, List(a, u1, c, d, x, p), List(a2, u2, c2, d2, x2, p2))
+      case (VMeta(id1), VMeta(id2)) => id1 == id2
       case _ => false
     }
   }
@@ -1205,12 +1210,12 @@ object Eval {
    */
   def normal(ns: List[String], v: Val): Val = v match {
     case VU => VU
-    case Closure(Term.Lam(x, t, u1), e) =>
+    case Closure(Term.Lam(_, x, t, u1), e) =>
       val w = eval(t, e)
       val freshVarVal @ VVar(n, _) = mkVarNice(ns, x, w): @unchecked
       VLam(n, normal(ns, w), normal(n :: ns, eval(u1, Environment.update((x, freshVarVal), e))))
     case Closure(t, e) => Closure(t, normalEnv(ns, e))
-    case VPi(u1, v1) => VPi(normal(ns, u1), normal(ns, v1))
+    case VPi(icity, u1, v1) => VPi(icity, normal(ns, u1), normal(ns, v1))
     case VSigma(u1, v1) => VSigma(normal(ns, u1), normal(ns, v1))
     case VPair(u1, v1) => VPair(normal(ns, u1), normal(ns, v1))
     case VCon(n, us) => VCon(n, us.map(normal(ns, _)))
@@ -1237,6 +1242,7 @@ object Eval {
     case VIdJ(a, u1, c, d, x, p) =>
       VIdJ(normal(ns, a), normal(ns, u1), normal(ns, c),
            normal(ns, d), normal(ns, x), normal(ns, p))
+    case VMeta(_) => v
     case _ => v
   }
 

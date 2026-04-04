@@ -16,6 +16,22 @@ object Loc {
 }
 
 /**
+ * Icity (implicit/explicit) annotation for Π-binders, λ-binders, and applications.
+ *
+ * {{{
+ *   (x : A) → B    Explicit binder
+ *   {x : A} → B    Implicit binder — argument inferred by elaboration
+ * }}}
+ *
+ * The name "Icity" follows the Agda convention: it classifies whether an
+ * argument position is **i**mpli**cit** or expli**cit**.
+ */
+enum Icity {
+  case Explicit
+  case Implicit
+}
+
+/**
  * `Ident` — a term-level variable name (e.g. `"x"`, `"f"`).
  *
  * `LabelIdent` — a constructor name in a labelled sum type (e.g. `"zero"`, `"suc"`).
@@ -168,10 +184,11 @@ object Declarations {
 enum Term {
   case U
   case Var(name: Ident)
-  case App(fun: Term, arg: Term)
-  case Pi(body: Term)                                    // Pi (Lam x a b)
-  case Lam(name: Ident, ty: Term, body: Term)
+  case App(icity: Icity, fun: Term, arg: Term)
+  case Pi(icity: Icity, body: Term)                      // Pi icity (Lam x a b)
+  case Lam(icity: Icity, name: Ident, ty: Term, body: Term)
   case Where(body: Term, decls: Declarations)
+  case Meta(id: Int)
   case Sigma(body: Term)                                 // Sigma (Lam x a b)
   case Pair(fst: Term, snd: Term)
   case Fst(pair: Term)
@@ -198,19 +215,25 @@ enum Term {
 }
 
 object Term {
-  /** Decompose left-nested applications: `f a₁ a₂ … aₙ  ↦  (f, [a₁, …, aₙ])`. */
-  def unApps(t: Term): (Term, List[Term]) = {
-    def collectApps(acc: List[Term], t: Term): (Term, List[Term]) = t match {
-      case App(fun, arg) => collectApps(arg :: acc, fun)
-      case _             => (t, acc)
+  /** Decompose left-nested applications: `f a₁ a₂ … aₙ  ↦  (f, [(icity₁, a₁), …, (icityₙ, aₙ)])`. */
+  def unApps(t: Term): (Term, List[(Icity, Term)]) = {
+    def collectApps(acc: List[(Icity, Term)], t: Term): (Term, List[(Icity, Term)]) = t match {
+      case App(icity, fun, arg) => collectApps((icity, arg) :: acc, fun)
+      case _                    => (t, acc)
     }
     collectApps(Nil, t)
   }
 
-  /** Build left-nested applications `f a₁ … aₙ` from a head and argument list. */
+  /** Build left-nested explicit applications `f a₁ … aₙ` from a head and argument list. */
   def mkApps(head: Term, args: List[Term]): Term = head match {
     case Con(ctor, existingArgs) => Con(ctor, existingArgs ++ args)
-    case _                       => args.foldLeft(head)(App.apply)
+    case _                       => args.foldLeft(head)(App(Icity.Explicit, _, _))
+  }
+
+  /** Build left-nested applications with icity annotations from a head and `(icity, arg)` list. */
+  def mkAppsIcity(head: Term, args: List[(Icity, Term)]): Term = head match {
+    case Con(ctor, existingArgs) => Con(ctor, existingArgs ++ args.map(_._2))
+    case _                       => args.foldLeft(head) { case (acc, (icity, arg)) => App(icity, acc, arg) }
   }
 
   /** Wrap `body` in a right-nested chain of `Where` declarations. */

@@ -165,6 +165,25 @@ private[cubical] class CubicalParser extends PackratParsers {
   def telescope: PackratParser[List[(String, RawTerm)]] =
     rep(teleEntry) ^^ { _.flatten }
 
+  /**
+   * A single telescope entry, either explicit `(x₁ x₂ : A)` or implicit `{x₁ x₂ : A}`.
+   * Returns a list of `(Icity, name, type)` triples.
+   */
+  def icityTeleEntry: PackratParser[List[(Icity, String, RawTerm)]] =
+    tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
+      case names ~ ty => names.map(n => (Icity.Explicit, n, ty))
+    } |
+    tok("{") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok("}") ^^ {
+      case names ~ ty => names.map(n => (Icity.Implicit, n, ty))
+    }
+
+  /**
+   * A telescope with icity annotations: `(x : A) {y : B} (z : C)`.
+   * Requires at least one entry.
+   */
+  def icityTele: PackratParser[List[(Icity, String, RawTerm)]] =
+    rep1(icityTeleEntry) ^^ { _.flatten }
+
   def pathTeleEntry: PackratParser[List[(String, RawTerm)]] =
     tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
       case names ~ ty => names.map(n => (n, ty))
@@ -184,8 +203,8 @@ private[cubical] class CubicalParser extends PackratParsers {
     }
 
   lazy val lamExpr: PackratParser[RawTerm] =
-    tok("\\") ~> pathTele ~ (tok("->") ~> expr) ^^ {
-      case tele ~ body => buildLams(tele, body)
+    tok("\\") ~> icityTele ~ (tok("->") ~> expr) ^^ {
+      case tele ~ body => buildIcityLams(tele, body)
     }
 
   lazy val plamExpr: PackratParser[RawTerm] =
@@ -204,37 +223,43 @@ private[cubical] class CubicalParser extends PackratParsers {
     piExpr | sigmaExpr | funOrExpr2
 
   lazy val piExpr: PackratParser[RawTerm] =
-    pathTele ~ (tok("->") ~> expr1) ^^ {
-      case tele ~ body => buildBindsPi(tele, body)
+    icityTele ~ (tok("->") ~> expr1) ^^ {
+      case tele ~ body => buildIcityBindsPi(tele, body)
     }
 
   lazy val sigmaExpr: PackratParser[RawTerm] =
     pathTele ~ (tok("*") ~> expr1) ^^ {
       case tele ~ body =>
-        tele.foldRight(body) { case ((name, ty), acc) => RawTerm.Sigma(RawTerm.Lam(name, ty, acc)) }
+        tele.foldRight(body) { case ((name, ty), acc) => RawTerm.Sigma(RawTerm.Lam(Icity.Explicit, name, ty, acc)) }
     }
 
   lazy val funOrExpr2: PackratParser[RawTerm] =
     expr2 ~ opt(tok("->") ~> expr1) ^^ {
       case e ~ None       => e
-      case e ~ Some(body) => RawTerm.Pi(RawTerm.Lam("_", e, body))
+      case e ~ Some(body) => RawTerm.Pi(Icity.Explicit, RawTerm.Lam(Icity.Explicit, "_", e, body))
     }
 
   /**
    * Application and formula application level.
    *
-   * Supports interleaved regular and path application:
-   * `f a b @ i x @ j` parses as `(((f a b) @ i) x) @ j`.
+   * Supports interleaved regular, implicit, and path application:
+   * `f a {b} @ i x @ j` parses with correct icity annotations.
    *
-   * Each "argument" is either a regular term (`atomExpr`) or a path
-   * application (`@ formula`).
+   * Each "argument" is either:
+   *   - a regular (explicit) term (`atomExpr`)
+   *   - an implicit application (`{expr}`)
+   *   - a path application (`@ formula`)
    */
   lazy val expr2: PackratParser[RawTerm] =
-    atomExpr ~ rep(atomExpr ^^ (Left(_)) | tok("@") ~> formula ^^ (Right(_))) ^^ {
+    atomExpr ~ rep(
+      tok("{") ~> expr <~ tok("}") ^^ (arg => Left((Icity.Implicit, arg))) |
+      atomExpr ^^ (arg => Left((Icity.Explicit, arg))) |
+      tok("@") ~> formula ^^ (Right(_))
+    ) ^^ {
       case head ~ args =>
         args.foldLeft(head) {
-          case (acc, Left(arg))  => RawTerm.App(acc, arg)
-          case (acc, Right(phi)) => RawTerm.AppFormula(acc, phi)
+          case (acc, Left((icity, arg))) => RawTerm.App(icity, acc, arg)
+          case (acc, Right(phi))         => RawTerm.AppFormula(acc, phi)
         }
     }
 
@@ -315,7 +340,7 @@ private[cubical] class CubicalParser extends PackratParsers {
 
   lazy val identExpr: PackratParser[RawTerm] =
     ident >> { name =>
-      (tok("{") ~> expr <~ tok("}") ^^ { ty => RawTerm.PCon(name, ty, Nil, Nil) }) |
+      (tok("{") ~> expr <~ tok("}") ^^ { arg => RawTerm.App(Icity.Implicit, RawTerm.Var(name), arg) }) |
       success(RawTerm.Var(name))
     }
 
@@ -406,10 +431,16 @@ private[cubical] class CubicalParser extends PackratParsers {
     }
 
   private def buildLams(tele: List[(String, RawTerm)], body: RawTerm): RawTerm =
-    tele.foldRight(body) { case ((name, ty), acc) => RawTerm.Lam(name, ty, acc) }
+    tele.foldRight(body) { case ((name, ty), acc) => RawTerm.Lam(Icity.Explicit, name, ty, acc) }
 
   private def buildBindsPi(tele: List[(String, RawTerm)], body: RawTerm): RawTerm =
-    tele.foldRight(body) { case ((name, ty), acc) => RawTerm.Pi(RawTerm.Lam(name, ty, acc)) }
+    tele.foldRight(body) { case ((name, ty), acc) => RawTerm.Pi(Icity.Explicit, RawTerm.Lam(Icity.Explicit, name, ty, acc)) }
+
+  private def buildIcityLams(tele: List[(Icity, String, RawTerm)], body: RawTerm): RawTerm =
+    tele.foldRight(body) { case ((icity, name, ty), acc) => RawTerm.Lam(icity, name, ty, acc) }
+
+  private def buildIcityBindsPi(tele: List[(Icity, String, RawTerm)], body: RawTerm): RawTerm =
+    tele.foldRight(body) { case ((icity, name, ty), acc) => RawTerm.Pi(icity, RawTerm.Lam(icity, name, ty, acc)) }
 }
 
 /**

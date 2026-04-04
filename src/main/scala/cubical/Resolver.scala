@@ -186,7 +186,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
       case (name, ty) :: rest =>
         val rTy    = resolveTerm(ty)
         val rInner = withScope(_.insertVar(name))(resolveBindsPi(rest, body))
-        Term.Pi(Term.Lam(name, rTy, rInner))
+        Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, name, rTy, rInner))
     }
 
   /** Resolve `λ x₁ … xₙ → body` where each binder is drawn from a raw telescope. */
@@ -196,7 +196,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
       case (paramName, ty) :: rest =>
         val rTy    = resolveTerm(ty)
         val rInner = withScope(_.insertVar(paramName))(resolveLams(rest, body))
-        Term.Lam(paramName, rTy, rInner)
+        Term.Lam(Icity.Explicit, paramName, rTy, rInner)
     }
 
   /**
@@ -219,7 +219,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
       case (paramName, ty) :: rest =>
         val rTy    = resolveTerm(ty)
         val rInner = withScope(_.insertVar(paramName))(resolveLamsWithWhere(rest, body, rawDecls))
-        Term.Lam(paramName, rTy, rInner)
+        Term.Lam(Icity.Explicit, paramName, rTy, rInner)
     }
 
   private def resolveDefBody(name: Ident, tele: List[(Ident, RawTerm)], body: RawExpWhere): Term =
@@ -276,7 +276,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
         val rInner = withScope(_.insertVar(paramName)) {
           resolveLabelsWithLams(rest, ctors, rawLabels, loc, name, sumCtor)
         }
-        Term.Lam(paramName, rTy, rInner)
+        Term.Lam(Icity.Explicit, paramName, rTy, rInner)
     }
 
   private def extractDeclNames(d: RawDecl): List[(Ident, SymKind)] = d match {
@@ -359,12 +359,22 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
         env.lookupKind(x) match {
           case Some(SymKind.Variable) =>
             val rArgs = resolveArgs(args)
-            if (rArgs.isEmpty) Term.Var(x) else Term.mkApps(Term.Var(x), rArgs)
+            if (rArgs.isEmpty) Term.Var(x) else Term.mkAppsIcity(Term.Var(x), rArgs)
           case Some(SymKind.Constructor) =>
-            val rArgs = resolveArgs(args)
+            val rArgs = resolveArgs(args).map(_._2)
             Term.Con(x, rArgs)
           case Some(SymKind.PConstructor) =>
-            throw ResolveError(s"Path constructor $x used without curly braces for the type")
+            // Path constructor: the first implicit argument is the data type,
+            // remaining explicit args are constructor arguments.
+            // The formula arguments (@ i j) are handled by AppFormula, not here.
+            args match {
+              case (Icity.Implicit, dtRaw) :: restArgs =>
+                val rDt = resolveTerm(dtRaw)
+                val rArgs = restArgs.map { case (_, raw) => resolveTerm(raw) }
+                Term.PCon(x, rDt, rArgs, Nil)
+              case _ =>
+                throw ResolveError(s"Path constructor $x requires a type argument in curly braces: $x {Type}")
+            }
           case Some(SymKind.DimName) =>
             throw ResolveError(s"Name $x used as expression")
           case None =>
@@ -373,25 +383,25 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
       case _ =>
         val rHead = resolveTermInner(head)
         val rArgs = resolveArgs(args)
-        if (rArgs.isEmpty) rHead else Term.mkApps(rHead, rArgs)
+        if (rArgs.isEmpty) rHead else Term.mkAppsIcity(rHead, rArgs)
     }
   }
 
-  private def resolveArgs(args: List[RawTerm]): List[Term] =
-    args.map(resolveTerm)
+  private def resolveArgs(args: List[(Icity, RawTerm)]): List[(Icity, Term)] =
+    args.map { case (icity, raw) => (icity, resolveTerm(raw)) }
 
   private def resolveTermInner(t: RawTerm): Term = t match {
     case RawTerm.U         => Term.U
     case RawTerm.Var(_)    => resolveTerm(t)
-    case RawTerm.App(_, _) => resolveTerm(t)
+    case RawTerm.App(_, _, _) => resolveTerm(t)
 
-    case RawTerm.Pi(body)    => Term.Pi(resolveTermInner(body))
+    case RawTerm.Pi(icity, body)    => Term.Pi(icity, resolveTermInner(body))
     case RawTerm.Sigma(body) => Term.Sigma(resolveTermInner(body))
 
-    case RawTerm.Lam(name, ty, body) =>
+    case RawTerm.Lam(icity, name, ty, body) =>
       val rTy   = resolveTerm(ty)
       val rBody = withScope(_.insertVar(name))(resolveTerm(body))
-      Term.Lam(name, rTy, rBody)
+      Term.Lam(icity, name, rTy, rBody)
 
     case RawTerm.Pair(a, b) =>
       Term.Pair(resolveTerm(a), resolveTerm(b))
@@ -406,7 +416,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
 
     case RawTerm.PCon(name, dt, args, phis) =>
       val rDt   = resolveTerm(dt)
-      val rArgs = resolveArgs(args)
+      val rArgs = args.map(resolveTerm)
       val rPhis = resolveFormulas(phis)
       Term.PCon(name, rDt, rArgs, rPhis)
 
@@ -438,16 +448,22 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
       val (baseHead, baseArgs) = RawTerm.unApps(base)
       baseHead match {
         case RawTerm.PCon(name, dt, pcArgs, _) =>
-          // Collect all App-node arguments on top of the PCon as extra args.
-          val allArgs = pcArgs ::: baseArgs
+          val allArgs = pcArgs ::: baseArgs.map(_._2)
           val rDt   = resolveTerm(dt)
-          val rArgs = resolveArgs(allArgs)
+          val rArgs = allArgs.map(resolveTerm)
           val rPhis = resolveFormulas(phis)
           Term.PCon(name, rDt, rArgs, rPhis)
+        case RawTerm.Var(name) if env.lookupKind(name).contains(SymKind.PConstructor) =>
+          baseArgs match {
+            case (Icity.Implicit, dtRaw) :: restArgs =>
+              val rDt = resolveTerm(dtRaw)
+              val rArgs = restArgs.map { case (_, raw) => resolveTerm(raw) }
+              val rPhis = resolveFormulas(phis)
+              Term.PCon(name, rDt, rArgs, rPhis)
+            case _ =>
+              throw ResolveError(s"Path constructor $name requires a type argument in curly braces: $name {Type}")
+          }
         case _ =>
-          // `base` is already the fully-applied base term (App chain stripped by
-          // `unAppFormulas` only strips AppFormula, so `base` still contains any
-          // App nodes).  Resolve `base` in full — do not re-apply `baseArgs`.
           val rBase = resolveTerm(base)
           val rPhis = resolveFormulas(phis)
           rPhis.foldLeft(rBase)((acc, phi) => Term.AppFormula(acc, phi))
@@ -577,7 +593,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
     tele.flatMap { case (names, ty) => names.map(n => (n, ty)) }
 
   private def buildLams(tele: List[(Ident, Term)], body: Term): Term =
-    tele.foldRight(body) { case ((name, ty), acc) => Term.Lam(name, ty, acc) }
+    tele.foldRight(body) { case ((name, ty), acc) => Term.Lam(Icity.Explicit, name, ty, acc) }
 }
 
 /**

@@ -121,9 +121,9 @@ case class RawModule(name: String, imports: List[String], decls: List[RawDecl])
 enum RawTerm {
   case U
   case Var(name: String)
-  case App(fun: RawTerm, arg: RawTerm)
-  case Pi(body: RawTerm)                                        // Pi (Lam x A B)
-  case Lam(name: String, ty: RawTerm, body: RawTerm)
+  case App(icity: Icity, fun: RawTerm, arg: RawTerm)
+  case Pi(icity: Icity, body: RawTerm)                                        // Pi icity (Lam x A B)
+  case Lam(icity: Icity, name: String, ty: RawTerm, body: RawTerm)
   case Where(body: RawTerm, decls: List[RawDecl])
   case Sigma(body: RawTerm)                                     // Sigma (Lam x A B)
   case Pair(fst: RawTerm, snd: RawTerm)
@@ -150,11 +150,11 @@ enum RawTerm {
 }
 
 object RawTerm {
-  /** Decompose left-nested applications: `f a₁ a₂ … aₙ  ↦  (f, [a₁, …, aₙ])`. */
-  def unApps(t: RawTerm): (RawTerm, List[RawTerm]) = {
-    def go(acc: List[RawTerm], t: RawTerm): (RawTerm, List[RawTerm]) = t match {
-      case App(fun, arg) => go(arg :: acc, fun)
-      case _             => (t, acc)
+  /** Decompose left-nested applications: `f a₁ a₂ … aₙ  ↦  (f, [(ι₁, a₁), …, (ιₙ, aₙ)])`. */
+  def unApps(t: RawTerm): (RawTerm, List[(Icity, RawTerm)]) = {
+    def go(acc: List[(Icity, RawTerm)], t: RawTerm): (RawTerm, List[(Icity, RawTerm)]) = t match {
+      case App(icity, fun, arg) => go((icity, arg) :: acc, fun)
+      case _                    => (t, acc)
     }
     go(Nil, t)
   }

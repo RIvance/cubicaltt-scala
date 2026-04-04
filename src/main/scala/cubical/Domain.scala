@@ -17,7 +17,7 @@ import scala.collection.immutable.Set
 enum Val {
   case VU
   case Closure(term: Term, env: Environment)
-  case VPi(domain: Type, codomain: Type)
+  case VPi(icity: Icity, domain: Type, codomain: Type)
   case VSigma(fstTy: Type, sndTy: Type)
   case VPair(fst: Val, snd: Val)
   case VCon(name: LabelIdent, args: List[Val])
@@ -43,6 +43,8 @@ enum Val {
   case VLam(name: Ident, domain: Type, body: Val)
   case VUnGlueElemU(equiv: Val, base: Type, sys: System[Val])
   case VIdJ(ty: Type, left: Val, mot: Val, refl: Val, right: Val, path: Val)
+  // Metavariable (existential, solved during elaboration)
+  case VMeta(id: Int)
 }
 
 /**
@@ -65,6 +67,7 @@ object Val {
     case VUnGlueElemU(_, _, _) => true
     case VUnGlueElem(_, _)     => true
     case VIdJ(_, _, _, _, _, _) => true
+    case VMeta(_)              => true
     case _                     => false
   }
 

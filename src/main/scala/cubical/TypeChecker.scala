@@ -57,7 +57,7 @@ object TypeChecker {
    * exposing `Environment` mutation directly.  Each modifier is pure and returns a
    * fresh `TypeEnv`.
    */
-  private def addTypeVal(identValPair: (Ident, Type), typeEnv: TypeEnv): TypeEnv = {
+  private[cubical] def addTypeVal(identValPair: (Ident, Type), typeEnv: TypeEnv): TypeEnv = {
     val (x, valType) = identValPair
     val freshVar = Eval.mkVarNice(typeEnv.names, x, valType)
     val n = freshVar match { case VVar(n, _) => n; case _ => x }
@@ -75,7 +75,7 @@ object TypeChecker {
   private def addSubs(nameFormulaPairs: List[(Name, Formula)], typeEnv: TypeEnv): TypeEnv =
     nameFormulaPairs.foldRight(typeEnv)((nameFormulaPair, t) => addSub(nameFormulaPair, t))
 
-  private def addType(identTermPair: (Ident, Term), typeEnv: TypeEnv): TypeEnv = {
+  private[cubical] def addType(identTermPair: (Ident, Term), typeEnv: TypeEnv): TypeEnv = {
     val (x, termTy) = identTermPair
     addTypeVal((x, Eval.eval(termTy, typeEnv.env)), typeEnv)
   }
@@ -160,7 +160,7 @@ object TypeChecker {
       val (labelTele, closureEnv) = getLabelType(label, expectedType, typeEnv)
       checks(labelTele, closureEnv, args, typeEnv)
 
-    case (VU, Term.Pi(codomain)) => checkFam(codomain, typeEnv)
+    case (VU, Term.Pi(_, codomain)) => checkFam(codomain, typeEnv)
 
     case (VU, Term.Sigma(famTerm)) => checkFam(famTerm, typeEnv)
 
@@ -190,7 +190,7 @@ object TypeChecker {
           checkCompSystem(Eval.evalSystem(rho2, ts), typeEnv3)
       }
 
-    case (VPi(valA, codomain), Term.Split(_, _, ty, caseBranches)) if isSumOrHSum(valA) =>
+    case (VPi(_, valA, codomain), Term.Split(_, _, ty, caseBranches)) if isSumOrHSum(valA) =>
       val (labels, closureEnv) = extractSumLabels(valA)
       check(VU, ty, typeEnv)
       val rho = typeEnv.env
@@ -202,7 +202,7 @@ object TypeChecker {
         checkBranch((lbl, closureEnv), codomain, branch, Val.Closure(t, rho), valA, typeEnv)
       }
 
-    case (VPi(valA2, f), Term.Lam(x, a2Ter, body)) =>
+    case (VPi(_, valA2, f), Term.Lam(_, x, a2Ter, body)) =>
       check(VU, a2Ter, typeEnv)
       val ns = typeEnv.names
       val rho = typeEnv.env
@@ -310,7 +310,7 @@ object TypeChecker {
   }
 
   private def checkFam(famTerm: Term, typeEnv: TypeEnv): Unit = famTerm match {
-    case Term.Lam(x, a, b) =>
+    case Term.Lam(_, x, a, b) =>
       check(VU, a, typeEnv)
       check(VU, b, addType((x, a), typeEnv))
     case x => throw TypeCheckError(s"checkFam: $x")
@@ -380,13 +380,13 @@ object TypeChecker {
     val List(a, b, f, g, x, y) = List("a", "b", "f", "g", "x", "y").map(Term.Var(_))
     val rho = Environment.update(("b", vb), Environment.empty)
     Eval.eval(
-      Term.Sigma(Term.Lam("a", Term.U,
-        Term.Sigma(Term.Lam("f", Term.Pi(Term.Lam("_", a, b)),
-          Term.Sigma(Term.Lam("g", Term.Pi(Term.Lam("_", b, a)),
-            Term.Sigma(Term.Lam("s", Term.Pi(Term.Lam("y", b,
-              Term.PathP(Term.PLam(Name("_"), b), Term.App(f, Term.App(g, y)), y))),
-              Term.Pi(Term.Lam("x", a,
-                Term.PathP(Term.PLam(Name("_"), a), Term.App(g, Term.App(f, x)), x))))))))))),
+      Term.Sigma(Term.Lam(Icity.Explicit, "a", Term.U,
+        Term.Sigma(Term.Lam(Icity.Explicit, "f", Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "_", a, b)),
+          Term.Sigma(Term.Lam(Icity.Explicit, "g", Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "_", b, a)),
+            Term.Sigma(Term.Lam(Icity.Explicit, "s", Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "y", b,
+              Term.PathP(Term.PLam(Name("_"), b), Term.App(Icity.Explicit, f, Term.App(Icity.Explicit, g, y)), y))),
+              Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "x", a,
+                Term.PathP(Term.PLam(Name("_"), a), Term.App(Icity.Explicit, g, Term.App(Icity.Explicit, f, x)), x))))))))))),
       rho
     )
   }
@@ -394,13 +394,13 @@ object TypeChecker {
   private def mkEquiv(valA: Type): Type = {
     val List(a, f, x, y, s, typeVar, z) = List("a", "f", "x", "y", "s", "t", "z").map(Term.Var(_))
     val rho = Environment.update(("a", valA), Environment.empty)
-    val fiberType = Term.Sigma(Term.Lam("y", typeVar, Term.PathP(Term.PLam(Name("_"), a), x, Term.App(f, y))))
-    val isContrFiber = Term.Sigma(Term.Lam("s", fiberType,
-      Term.Pi(Term.Lam("z", fiberType, Term.PathP(Term.PLam(Name("_"), fiberType), s, z)))))
+    val fiberType = Term.Sigma(Term.Lam(Icity.Explicit, "y", typeVar, Term.PathP(Term.PLam(Name("_"), a), x, Term.App(Icity.Explicit, f, y))))
+    val isContrFiber = Term.Sigma(Term.Lam(Icity.Explicit, "s", fiberType,
+      Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "z", fiberType, Term.PathP(Term.PLam(Name("_"), fiberType), s, z)))))
     Eval.eval(
-      Term.Sigma(Term.Lam("t", Term.U,
-        Term.Sigma(Term.Lam("f", Term.Pi(Term.Lam("_", typeVar, a)),
-          Term.Pi(Term.Lam("x", a, isContrFiber)))))),
+      Term.Sigma(Term.Lam(Icity.Explicit, "t", Term.U,
+        Term.Sigma(Term.Lam(Icity.Explicit, "f", Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "_", typeVar, a)),
+          Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "x", a, isContrFiber)))))),
       rho
     )
   }
@@ -521,9 +521,9 @@ object TypeChecker {
 
     case Term.Var(n) => Eval.lookupType(n, typeEnv.env)
 
-    case Term.App(t, u) =>
+    case Term.App(_, t, u) =>
       infer(t, typeEnv) match {
-        case VPi(a, f) =>
+        case VPi(_, a, f) =>
           check(a, u, typeEnv)
           Eval.app(f, Eval.eval(u, typeEnv.env))
         case inferredType => throw TypeCheckError(s"$inferredType is not a product")
@@ -597,7 +597,7 @@ object TypeChecker {
       val evaledLeft = Eval.eval(u, typeEnv.env)
       val reflElement = VIdPair(Val.constPath(evaledLeft), SystemOps.mkSystem(List((Face.eps, evaledLeft))))
       val rho = typeEnv.env
-      val ctype = Eval.eval(Term.Pi(Term.Lam("z", a, Term.Pi(Term.Lam("_", Term.Id(a, u, Term.Var("z")), Term.U)))), rho)
+      val ctype = Eval.eval(Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "z", a, Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, "_", Term.Id(a, u, Term.Var("z")), Term.U)))), rho)
       check(ctype, c, typeEnv)
       val evaledMotive = Eval.eval(c, typeEnv.env)
       check(Eval.app(Eval.app(evaledMotive, evaledLeft), reflElement), d, typeEnv)

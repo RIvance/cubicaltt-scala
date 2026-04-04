@@ -146,7 +146,7 @@ object Main {
       }
 
       val startEnv = if (options.verbose) TypeEnv.verboseEnv else TypeEnv.silentEnv
-      val (merr, tenv) = TypeChecker.runDeclss(startEnv, allDecls)
+      val (merr, tenv) = Elaborator.elaborateDeclss(startEnv, allDecls)
       merr match {
         case Some(err) => println(s"Type checking failed: $err")
         case None =>
