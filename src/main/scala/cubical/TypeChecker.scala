@@ -92,7 +92,7 @@ object TypeChecker {
   private def addTele(tele: Telescope, typeEnv: TypeEnv): TypeEnv =
     tele.foldLeft(typeEnv)((t, entry) => addType(entry, t))
 
-  private def faceEnv(alpha: Face, typeEnv: TypeEnv): TypeEnv =
+  private[cubical] def faceEnv(alpha: Face, typeEnv: TypeEnv): TypeEnv =
     typeEnv.copy(env = Nominal.face(typeEnv.env, alpha))
 
   /**

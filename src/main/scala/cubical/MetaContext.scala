@@ -195,12 +195,44 @@ object MetaContext {
    * the name context for η-expansion; for now we piggyback on the fact
    * that meta solutions are typically small closed values.
    */
+   def containsMeta(metaCtx: MetaContext, value: Val): Boolean = {
+     def go(v: Val): Boolean = MetaContext.force(metaCtx, v) match {
+       case Val.VMeta(_)               => true
+       case Val.VPi(_, a, b)           =>
+         val dummy = Val.VVar("_", a)
+         go(a) || go(Eval.app(b, dummy))
+       case Val.VSigma(a, b)           =>
+         val dummy = Val.VVar("_", a)
+         go(a) || go(Eval.app(b, dummy))
+       case Val.VPathP(fam, a0, a1)    =>
+         // fam is typically a path-lambda <i> A(i): apply to a dummy formula atom to expose the body
+         val famBody = try Eval.appFormula(fam, Formula.Atom(Name("_i"))) catch { case _: Exception => fam }
+         go(famBody) || go(a0) || go(a1)
+       case Val.VApp(f, arg)           => go(f) || go(arg)
+       case Val.VPair(a, b)            => go(a) || go(b)
+       case cl @ Val.Closure(_, _)     =>
+         // Closures may contain metas inside their term. Evaluate at a dummy var to expose the body.
+         // IMPORTANT: use the forced value `cl`, not the original `v`, to avoid infinite loops when
+         // `v` is a VMeta that force() resolved to a Closure.
+         val dummy = Val.VVar("_cl", Val.VU)
+         try go(Eval.app(cl, dummy)) catch { case _: Exception => false }
+       case _                          => false
+     }
+     go(value)
+   }
+
   def readBackVal(metaCtx: MetaContext, value: Val): Term = value match {
     case Val.VU => Term.U
     case Val.VMeta(id) => Term.Meta(id)
     case Val.VVar(name, _) => Term.Var(name)
     case Val.VApp(fun, arg) =>
       Term.App(Icity.Explicit, readBackVal(metaCtx, fun), readBackVal(metaCtx, arg))
+    case Val.VFst(pair) =>
+      Term.Fst(readBackVal(metaCtx, pair))
+    case Val.VSnd(pair) =>
+      Term.Snd(readBackVal(metaCtx, pair))
+    case Val.VAppFormula(path, phi) =>
+      Term.AppFormula(readBackVal(metaCtx, path), phi)
     case Val.VPi(icity, domain, codomain) =>
       val x = "_"
       Term.Pi(icity, Term.Lam(icity, x, readBackVal(metaCtx, domain), readBackClosure(metaCtx, x, domain, codomain)))

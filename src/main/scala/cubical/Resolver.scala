@@ -154,8 +154,8 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
       val loc  = freshLoc()
       val splitName = env.moduleName + "_L" + loc.line + "_C" + loc.col
       val rType     = resolveBindsPi(tele, ty)
-      val rTy       = withScope(_.insertVars(tele.map(_._1)))(resolveTerm(ty))
-      val rBranches = withScope(_.insertVars(name :: tele.map(_._1)))(resolveBranches(branches))
+      val rTy       = withScope(_.insertVars(tele.map(_._2)))(resolveTerm(ty))
+      val rBranches = withScope(_.insertVars(name :: tele.map(_._2)))(resolveBranches(branches))
       val rTele     = resolveRawTelescope(tele)
       val body      = buildLams(rTele, Term.Split(splitName, loc, rTy, rBranches))
       (Declarations.MutualDecls(loc, List((name, (rType, body)))), List((name, SymKind.Variable)))
@@ -180,23 +180,23 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
   }
 
   /** Resolve `(x₁ : A₁) → … → (xₙ : Aₙ) → body` where the telescope binds each name into scope. */
-  private def resolveBindsPi(tele: List[(Ident, RawTerm)], body: RawTerm): Term =
+  private def resolveBindsPi(tele: List[(Icity, Ident, RawTerm)], body: RawTerm): Term =
     tele match {
       case Nil => resolveTerm(body)
-      case (name, ty) :: rest =>
+      case (icity, name, ty) :: rest =>
         val rTy    = resolveTerm(ty)
         val rInner = withScope(_.insertVar(name))(resolveBindsPi(rest, body))
-        Term.Pi(Icity.Explicit, Term.Lam(Icity.Explicit, name, rTy, rInner))
+        Term.Pi(icity, Term.Lam(icity, name, rTy, rInner))
     }
 
   /** Resolve `λ x₁ … xₙ → body` where each binder is drawn from a raw telescope. */
-  private def resolveLams(tele: List[(Ident, RawTerm)], body: RawTerm): Term =
+  private def resolveLams(tele: List[(Icity, Ident, RawTerm)], body: RawTerm): Term =
     tele match {
       case Nil => resolveTerm(body)
-      case (paramName, ty) :: rest =>
+      case (icity, paramName, ty) :: rest =>
         val rTy    = resolveTerm(ty)
         val rInner = withScope(_.insertVar(paramName))(resolveLams(rest, body))
-        Term.Lam(Icity.Explicit, paramName, rTy, rInner)
+        Term.Lam(icity, paramName, rTy, rInner)
     }
 
   /**
@@ -207,7 +207,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
    * The resulting term has the shape `Lam(x₁, A₁, … Lam(xₙ, Aₙ, Where(body, decls)))`.
    */
   private def resolveLamsWithWhere(
-    tele: List[(Ident, RawTerm)],
+    tele: List[(Icity, Ident, RawTerm)],
     body: RawTerm,
     rawDecls: List[RawDecl]
   ): Term =
@@ -216,13 +216,13 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
         val (resolvedDecls, _) = resolveDecls(rawDecls)
         val rb = resolveTerm(body)
         Term.mkWheres(resolvedDecls, rb)
-      case (paramName, ty) :: rest =>
+      case (icity, paramName, ty) :: rest =>
         val rTy    = resolveTerm(ty)
         val rInner = withScope(_.insertVar(paramName))(resolveLamsWithWhere(rest, body, rawDecls))
-        Term.Lam(Icity.Explicit, paramName, rTy, rInner)
+        Term.Lam(icity, paramName, rTy, rInner)
     }
 
-  private def resolveDefBody(name: Ident, tele: List[(Ident, RawTerm)], body: RawExpWhere): Term =
+  private def resolveDefBody(name: Ident, tele: List[(Icity, Ident, RawTerm)], body: RawExpWhere): Term =
     body match {
       case RawExpWhere.NoWhere(e) =>
         withScope(_.insertVar(name))(resolveLams(tele, e))
@@ -238,7 +238,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
 
   private def resolveDeclData(
     name: Ident,
-    rawTele: List[(List[Ident], RawTerm)],
+    rawTele: List[(Icity, List[Ident], RawTerm)],
     rawLabels: List[RawLabel],
     useHSum: Boolean
   ): (Declarations, List[(Ident, SymKind)]) = {
@@ -258,7 +258,7 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
   }
 
   private def resolveLabelsWithLams(
-    tele: List[(Ident, RawTerm)],
+    tele: List[(Icity, Ident, RawTerm)],
     ctors: List[(Ident, SymKind)],
     rawLabels: List[RawLabel],
     loc: Loc,
@@ -271,12 +271,12 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
           val rLabels = resolveRawLabels(rawLabels)
           sumCtor(loc, name, rLabels)
         }
-      case (paramName, ty) :: rest =>
+      case (icity, paramName, ty) :: rest =>
         val rTy    = resolveTerm(ty)
         val rInner = withScope(_.insertVar(paramName)) {
           resolveLabelsWithLams(rest, ctors, rawLabels, loc, name, sumCtor)
         }
-        Term.Lam(Icity.Explicit, paramName, rTy, rInner)
+        Term.Lam(icity, paramName, rTy, rInner)
     }
 
   private def extractDeclNames(d: RawDecl): List[(Ident, SymKind)] = d match {
@@ -334,8 +334,8 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
       val loc  = freshLoc()
       val splitName = env.moduleName + "_L" + loc.line + "_C" + loc.col
       val rType     = resolveBindsPi(tele, ty)
-      val rTy       = withScope(_.insertVars(tele.map(_._1)))(resolveTerm(ty))
-      val rBranches = withScope(_.insertVars(name :: tele.map(_._1)))(resolveBranches(branches))
+      val rTy       = withScope(_.insertVars(tele.map(_._2)))(resolveTerm(ty))
+      val rBranches = withScope(_.insertVars(name :: tele.map(_._2)))(resolveBranches(branches))
       val rTele     = resolveRawTelescope(tele)
       List((name, (rType, buildLams(rTele, Term.Split(splitName, loc, rTy, rBranches)))))
 
@@ -564,11 +564,11 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
 
   private def resolveRawLabel(l: RawLabel): Label = l match {
     case RawLabel.OrdinaryLabel(name, rawLabelTele) =>
-      val tele = flattenRawTele(rawLabelTele)
-      Label.OrdinaryLabel(name, resolveRawTelescope(tele))
+      val tele = flattenRawLabelTele(rawLabelTele)
+      Label.OrdinaryLabel(name, resolveRawLabelTelescope(tele))
     case RawLabel.PathLabel(name, rawLabelTele, dims, rawSys) =>
-      val tele = flattenRawTele(rawLabelTele)
-      val rt   = resolveRawTelescope(tele)
+      val tele = flattenRawLabelTele(rawLabelTele)
+      val rt   = resolveRawLabelTelescope(tele)
       val rSys = withScope { e =>
         e.insertNames(dims).insertVars(tele.map(_._1))
       }(resolveSystem(rawSys))
@@ -579,21 +579,49 @@ class Resolver(moduleName: String, existingNames: List[(Ident, SymKind)]) {
   // Telescope helpers
   // ---------------------------------------------------------------------------
 
-  /** Resolve a raw telescope `List[(Ident, RawTerm)]` to a resolved `Telescope`. */
-  private def resolveRawTelescope(tele: List[(Ident, RawTerm)]): Telescope =
+  /**
+   * Flatten a declaration telescope `List[(Icity, List[Ident], RawTerm)]` into
+   * individual binders `List[(Icity, Ident, RawTerm)]`.
+   */
+  private def flattenRawTele(tele: List[(Icity, List[Ident], RawTerm)]): List[(Icity, Ident, RawTerm)] =
+    tele.flatMap { case (icity, names, ty) => names.map(n => (icity, n, ty)) }
+
+  /**
+   * Flatten a constructor-label telescope `List[(List[Ident], RawTerm)]`
+   * (which carries no icity) into `List[(Ident, RawTerm)]`.
+   */
+  private def flattenRawLabelTele(tele: List[(List[Ident], RawTerm)]): List[(Ident, RawTerm)] =
+    tele.flatMap { case (names, ty) => names.map(n => (n, ty)) }
+
+  /**
+   * Resolve a declaration telescope `List[(Icity, Ident, RawTerm)]` to
+   * `List[(Icity, Ident, Term)]`, binding each name into scope for the rest.
+   */
+  private def resolveRawTelescope(tele: List[(Icity, Ident, RawTerm)]): List[(Icity, Ident, Term)] =
+    tele match {
+      case Nil => Nil
+      case (icity, name, ty) :: rest =>
+        val rTy   = resolveTerm(ty)
+        val rRest = withScope(_.insertVar(name))(resolveRawTelescope(rest))
+        (icity, name, rTy) :: rRest
+    }
+
+  /**
+   * Resolve a constructor-label telescope `List[(Ident, RawTerm)]` (no icity)
+   * to a `Telescope = List[(Ident, Term)]`, binding each name into scope for the rest.
+   */
+  private def resolveRawLabelTelescope(tele: List[(Ident, RawTerm)]): Telescope =
     tele match {
       case Nil => Nil
       case (name, ty) :: rest =>
         val rTy   = resolveTerm(ty)
-        val rRest = withScope(_.insertVar(name))(resolveRawTelescope(rest))
+        val rRest = withScope(_.insertVar(name))(resolveRawLabelTelescope(rest))
         (name, rTy) :: rRest
     }
 
-  private def flattenRawTele(tele: List[(List[Ident], RawTerm)]): List[(Ident, RawTerm)] =
-    tele.flatMap { case (names, ty) => names.map(n => (n, ty)) }
-
-  private def buildLams(tele: List[(Ident, Term)], body: Term): Term =
-    tele.foldRight(body) { case ((name, ty), acc) => Term.Lam(Icity.Explicit, name, ty, acc) }
+  /** Build a lambda chain from a resolved declaration telescope, preserving icity. */
+  private def buildLams(tele: List[(Icity, Ident, Term)], body: Term): Term =
+    tele.foldRight(body) { case ((icity, name, ty), acc) => Term.Lam(icity, name, ty, acc) }
 }
 
 /**

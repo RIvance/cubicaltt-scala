@@ -42,8 +42,9 @@ object Elaborator {
       inferApp(term, typeEnv, metaCtx)
 
     case _ =>
-      val inferredType = TypeChecker.infer(term, typeEnv)
-      (term, inferredType, metaCtx)
+      val (preElabTerm, mc1) = preElaborate(term, typeEnv, metaCtx)
+      val inferredType = TypeChecker.infer(preElabTerm, typeEnv)
+      (preElabTerm, inferredType, mc1)
   }
 
   /**
@@ -63,7 +64,14 @@ object Elaborator {
         MetaContext.force(metaCtx1, exposedType) match {
           case Val.VPi(Icity.Explicit, domain, codomain) =>
             val solvedDomain = MetaContext.force(metaCtx1, domain)
-            val (elaboratedArg, metaCtx2) = check(solvedDomain, argTerm, typeEnv, metaCtx1)
+            val (elaboratedArg, metaCtx2) =
+              if (MetaContext.containsMeta(metaCtx1, solvedDomain)) {
+                val (elabArg, inferredArgType, mc2) = infer(argTerm, typeEnv, metaCtx1)
+                val mc3 = Unify.unify(typeEnv.names, solvedDomain, inferredArgType, mc2)
+                (elabArg, mc3)
+              } else {
+                check(solvedDomain, argTerm, typeEnv, metaCtx1)
+              }
             val zonkedArg = MetaContext.zonkTerm(metaCtx2, elaboratedArg)
             val argVal = Eval.eval(zonkedArg, typeEnv.env)
             (Term.App(Icity.Explicit, insertedHead, zonkedArg), Eval.app(codomain, argVal), metaCtx2)
@@ -133,12 +141,119 @@ object Elaborator {
         val bodyType = Eval.app(codomain, metaVal)
         val (elaboratedBody, metaCtx2) = check(bodyType, term, typeEnv, metaCtx1)
         (Term.Lam(Icity.Implicit, name, domainTerm, elaboratedBody), metaCtx2)
+
+      case Val.VPi(icity, valA, codomain) =>
+        term match {
+          case Term.Lam(icity2, x, aTerm, bodyTerm) =>
+            val (elabA, metaCtx1) = check(Val.VU, aTerm, typeEnv, metaCtx)
+            val zonkedA = MetaContext.zonkTerm(metaCtx1, elabA)
+            val evaledA = Eval.eval(zonkedA, typeEnv.env)
+            if (!Eval.convert(typeEnv.names, valA, evaledA))
+              throw TypeCheckError(
+                s"check: lam types don't match\nlambda annotation: $aTerm\ndomain of Pi: $valA"
+              )
+            val varVal = Eval.mkVarNice(typeEnv.names, x, valA)
+            val innerTypeEnv = TypeChecker.addTypeVal((x, valA), typeEnv)
+            val bodyType = Eval.app(codomain, varVal)
+            val (elabBody, metaCtx2) = check(bodyType, bodyTerm, innerTypeEnv, metaCtx1)
+            (Term.Lam(icity2, x, zonkedA, elabBody), metaCtx2)
+
+          case _ =>
+            term match {
+              case Term.App(_, _, _) if needsElaboration(term, typeEnv) =>
+                // Try inferApp+unify first (left-to-right, better for higher-order motives).
+                // Fall back to checkApp (backward result-type unification) when inferApp
+                // can't check an argument against an unsolved meta domain (e.g. PLam args).
+                try {
+                  val (elabTerm, inferredType, mc1) = inferApp(term, typeEnv, metaCtx)
+                  val mc2 = Unify.unify(typeEnv.names, forced, inferredType, mc1)
+                  (MetaContext.zonkTerm(mc2, elabTerm), mc2)
+                } catch {
+                  case _: TypeCheckError =>
+                    checkApp(forced, term, typeEnv, metaCtx)
+                }
+              case Term.Where(e, decls) =>
+                val (newTypeEnv, _, zonkedDecls) = elaborateDecls(decls, typeEnv, MetaContext.empty)
+                val (elabE, metaCtx1) = check(forced, e, newTypeEnv, metaCtx)
+                val zonkedE = MetaContext.zonkTerm(metaCtx1, elabE)
+                (Term.Where(zonkedE, zonkedDecls), metaCtx1)
+              case _ if isPurelyInferrable(term) =>
+                // For terms whose types are fully determined by inference (Var, App, Fst, Snd, etc.),
+                // use infer+unify rather than TypeChecker.check, so that metas embedded inside
+                // the expected type (e.g. in closures) are resolved via Unify rather than
+                // causing a raw Eval.convert failure.
+                val (preElabTerm, mc1) = preElaborate(term, typeEnv, metaCtx)
+                val (elaboratedTerm, inferredType, mc2) = infer(preElabTerm, typeEnv, mc1)
+                val mc3 = Unify.unify(typeEnv.names, forced, inferredType, mc2)
+                (elaboratedTerm, mc3)
+              case _ =>
+                TypeChecker.check(forced, term, typeEnv)
+                (term, metaCtx)
+            }
+        }
+
+      case Val.VU if term.isInstanceOf[Term.PathP] =>
+        val Term.PathP(familyTerm, e0, e1) = term.asInstanceOf[Term.PathP]
+        val (elabFamily, metaCtx1) = elaboratePathFamily(familyTerm, typeEnv, metaCtx)
+        val zonkedFamily = MetaContext.zonkTerm(metaCtx1, elabFamily)
+        val familyVal = Eval.eval(zonkedFamily, typeEnv.env)
+        val a0 = Eval.appFormula(familyVal, Formula.Dir(Dir.Zero))
+        val a1 = Eval.appFormula(familyVal, Formula.Dir(Dir.One))
+        val (elabE0, metaCtx2) = check(a0, e0, typeEnv, metaCtx1)
+        val (elabE1, metaCtx3) = check(a1, e1, typeEnv, metaCtx2)
+        (Term.PathP(zonkedFamily, elabE0, elabE1), metaCtx3)
+
+      case Val.VPathP(pathFamily, pathA0, pathA1) if term.isInstanceOf[Term.PLam] =>
+        val Term.PLam(dimName, body) = term.asInstanceOf[Term.PLam]
+        val dimEnv = typeEnv.copy(
+          env = Environment.substitute((dimName, Formula.Atom(dimName)), typeEnv.env)
+        )
+        val bodyType = Eval.appFormula(pathFamily, Formula.Atom(dimName))
+        val (elabBody, metaCtx1) = check(bodyType, body, dimEnv, metaCtx)
+        val zonkedBody = MetaContext.zonkTerm(metaCtx1, elabBody)
+        val u0 = Eval.eval(zonkedBody, Environment.substitute((dimName, Formula.Dir(Dir.Zero)), typeEnv.env))
+        val u1 = Eval.eval(zonkedBody, Environment.substitute((dimName, Formula.Dir(Dir.One)), typeEnv.env))
+        val forcedA0 = MetaContext.force(metaCtx1, pathA0)
+        val forcedA1 = MetaContext.force(metaCtx1, pathA1)
+        if (!Eval.convert(typeEnv.names, forcedA0, u0) || !Eval.convert(typeEnv.names, forcedA1, u1))
+          throw TypeCheckError(
+            s"path endpoints don't match: got ($u0, $u1), expected ($forcedA0, $forcedA1)"
+          )
+        (Term.PLam(dimName, zonkedBody), metaCtx1)
+
       case _ => term match {
+        case Term.Pi(icity, Term.Lam(icity2, x, a, b)) if forced == Val.VU =>
+          val (elabA, metaCtx1) = check(Val.VU, a, typeEnv, metaCtx)
+          val zonkedA = MetaContext.zonkTerm(metaCtx1, elabA)
+          val innerTypeEnv = TypeChecker.addType((x, zonkedA), typeEnv)
+          val (elabB, metaCtx2) = check(Val.VU, b, innerTypeEnv, metaCtx1)
+          val zonkedB = MetaContext.zonkTerm(metaCtx2, elabB)
+          (Term.Pi(icity, Term.Lam(icity2, x, zonkedA, zonkedB)), metaCtx2)
+
+        case Term.Sigma(Term.Lam(icity2, x, a, b)) if forced == Val.VU =>
+          val (elabA, metaCtx1) = check(Val.VU, a, typeEnv, metaCtx)
+          val zonkedA = MetaContext.zonkTerm(metaCtx1, elabA)
+          val innerTypeEnv = TypeChecker.addType((x, zonkedA), typeEnv)
+          val (elabB, metaCtx2) = check(Val.VU, b, innerTypeEnv, metaCtx1)
+          val zonkedB = MetaContext.zonkTerm(metaCtx2, elabB)
+          (Term.Sigma(Term.Lam(icity2, x, zonkedA, zonkedB)), metaCtx2)
+
+        case Term.Where(e, decls) =>
+          val (newTypeEnv, _, zonkedDecls) = elaborateDecls(decls, typeEnv, MetaContext.empty)
+          val (elabE, metaCtx1) = check(forced, e, newTypeEnv, metaCtx)
+          val zonkedE = MetaContext.zonkTerm(metaCtx1, elabE)
+          (Term.Where(zonkedE, zonkedDecls), metaCtx1)
+
         case Term.App(_, _, _) if needsElaboration(term, typeEnv) =>
-          checkApp(forced, term, typeEnv, metaCtx)
+          try {
+            val (elabTerm, inferredType, mc1) = inferApp(term, typeEnv, metaCtx)
+            val mc2 = Unify.unify(typeEnv.names, forced, inferredType, mc1)
+            (MetaContext.zonkTerm(mc2, elabTerm), mc2)
+          } catch {
+            case _: TypeCheckError =>
+              checkApp(forced, term, typeEnv, metaCtx)
+          }
         case _ =>
-          // When the expected type is an unsolved meta, try inferring the
-          // term's type and solve the meta by unification.
           forced match {
             case Val.VMeta(id) =>
               try {
@@ -150,8 +265,15 @@ object Elaborator {
                   throw TypeCheckError(s"Cannot infer type of $term to solve metavariable ?$id")
               }
             case _ =>
-              TypeChecker.check(forced, term, typeEnv)
-              (term, metaCtx)
+              val (preElabTerm, metaCtx1) = preElaborate(term, typeEnv, metaCtx)
+              if (isPurelyInferrable(preElabTerm)) {
+                val (elaboratedTerm, inferredType, mc2) = infer(preElabTerm, typeEnv, metaCtx1)
+                val mc3 = Unify.unify(typeEnv.names, forced, inferredType, mc2)
+                (elaboratedTerm, mc3)
+              } else {
+                TypeChecker.check(forced, preElabTerm, typeEnv)
+                (preElabTerm, metaCtx1)
+              }
           }
       }
     }
@@ -249,109 +371,202 @@ object Elaborator {
     *   2. The head variable's type starts with `VPi(Implicit, …)`,
     *      meaning the elaborator must insert implicit metas
     */
-  private def needsElaboration(term: Term, typeEnv: TypeEnv): Boolean = {
-    val (head, spine) = Term.unApps(term)
-    if (spine.exists(_._1 == Icity.Implicit)) return true
-    head match {
-      case Term.Var(name) =>
-        try {
-          Eval.lookupType(name, typeEnv.env) match {
-            case Val.VPi(Icity.Implicit, _, _) => true
-            case _ => false
-          }
-        } catch {
-          case _: Exception => false
-        }
-      case _ => false
-    }
-  }
-
-  /**
-   * Elaborate a block of mutual declarations.
-   *
-   * This is the top-level entry point: for each declaration `x : A = t`,
-   * the elaborator infers/checks types and bodies, threads `metaCtx`
-   * through, zonks the results, and verifies that all metas are solved.
-   *
-   * After elaboration the declarations are passed to `TypeChecker.runDecls`
-   * for the core type check (which handles the full cubical feature set).
-   *
-   * @param decls   the mutual declaration block to elaborate
-   * @param typeEnv the current typing environment
-   * @param metaCtx the current metavariable context (typically `MetaContext.empty`
-   *                at the start of each top-level declaration block)
-   * @return (updated TypeEnv with the new declarations, updated MetaContext)
-   */
-  def elaborateDecls(decls: Declarations, typeEnv: TypeEnv, metaCtx: MetaContext): (TypeEnv, MetaContext) = decls match {
-    case Declarations.MutualDecls(loc, declPairs) =>
-      // Phase 1: Add the declaration block to the environment so that recursive
-      // references resolve during elaboration.  We use Environment.addDecl (a Define
-      // node) instead of individual addType bindings — this matches how the core
-      // TypeChecker builds its checking environment in checkDecls.
-      val tempTypeEnv = typeEnv.copy(env = Environment.addDecl(decls, typeEnv.env))
-
-      // Phase 2: Elaborate each declaration, threading metaCtx.
-      // For each decl, check the type annotation against U and the body
-      // against the elaborated type.  The elaborator inserts implicit lambdas
-      // and fresh metas as needed; for non-implicit types it falls through to
-      // the core TypeChecker.
-      val (elaboratedPairs, metaCtx1) = declPairs.foldLeft((List.empty[Declaration], metaCtx)) {
-        case ((acc, currentMetaCtx), (name, (tyTerm, bodyTerm))) =>
-          val (elaboratedTy, metaCtx2) = check(Val.VU, tyTerm, tempTypeEnv, currentMetaCtx)
-          val tyVal = Eval.eval(elaboratedTy, tempTypeEnv.env)
-          val (elaboratedBody, metaCtx3) = check(tyVal, bodyTerm, tempTypeEnv, metaCtx2)
-          (acc :+ (name, (elaboratedTy, elaboratedBody)), metaCtx3)
-      }
-
-      // Phase 3: Verify all metas are solved
-      val unsolved = metaCtx1.unsolvedMetas
-      if (unsolved.nonEmpty) {
-        throw ElaborationError(
-          s"Unsolved metavariables after elaborating declarations at $loc: " +
-          unsolved.map(id => s"?$id").mkString(", ")
+  private def elaboratePathFamily(familyTerm: Term, typeEnv: TypeEnv, metaCtx: MetaContext): (Term, MetaContext) =
+    familyTerm match {
+      case Term.PLam(dimName, body) =>
+        val dimEnv = typeEnv.copy(
+          env = Environment.substitute((dimName, Formula.Atom(dimName)), typeEnv.env)
         )
-      }
+        val (elabBody, metaCtx1) = check(Val.VU, body, dimEnv, metaCtx)
+        (Term.PLam(dimName, elabBody), metaCtx1)
+      case Term.App(_, _, _) if needsElaboration(familyTerm, typeEnv) =>
+        val (elabFamily, _, metaCtx1) = inferApp(familyTerm, typeEnv, metaCtx)
+        (MetaContext.zonkTerm(metaCtx1, elabFamily), metaCtx1)
+      case _ =>
+        (familyTerm, metaCtx)
+    }
 
-      // Phase 4: Zonk all elaborated terms (substitute solved metas)
-      val zonkedPairs = elaboratedPairs.map { case (name, (tyTerm, bodyTerm)) =>
-        val zt = MetaContext.zonkTerm(metaCtx1, tyTerm)
-        val zb = MetaContext.zonkTerm(metaCtx1, bodyTerm)
-        (name, (zt, zb))
-      }
+  /**
+   * Recursively pre-elaborate a term by inserting implicit arguments into all
+   * application sub-terms that need them, before the core `TypeChecker` sees
+   * the term.
+   *
+   * This is needed for cubical primitives (`comp`, `fill`, `AppFormula`, etc.)
+   * that the Elaborator's `check` method does not directly intercept. Their
+   * sub-terms may contain calls to functions with implicit arguments (e.g.
+   * `transNeg p y` inside a `comp` base), which the core checker cannot handle.
+   *
+   * `preElaborate` works in inference mode only: it uses `inferApp` for
+   * applications, which is sound because implicit arguments can always be
+   * inferred from the explicit argument types.
+   */
+  private def preElaborate(term: Term, typeEnv: TypeEnv, metaCtx: MetaContext): (Term, MetaContext) = term match {
+    case Term.App(_, _, _) if needsElaboration(term, typeEnv) =>
+      val (elabTerm, _, mc1) = inferApp(term, typeEnv, metaCtx)
+      (MetaContext.zonkTerm(mc1, elabTerm), mc1)
 
-      // Phase 5: Delegate to core TypeChecker for full cubical checking
-      val zonkedDecls = Declarations.MutualDecls(loc, zonkedPairs)
-      TypeChecker.runDecls(typeEnv, zonkedDecls) match {
-        case Right(updatedTypeEnv) => (updatedTypeEnv, metaCtx1)
-        case Left(err) => throw TypeCheckError(err)
-      }
+    case Term.App(icity, f, arg) =>
+      val (elabF, mc1) = preElaborate(f, typeEnv, metaCtx)
+      val (elabArg, mc2) = preElaborate(arg, typeEnv, mc1)
+      (Term.App(icity, elabF, elabArg), mc2)
 
-    // Pragmas pass through unchanged — no metas involved
-    case Declarations.OpaqueDecl(_) | Declarations.TransparentDecl(_) | Declarations.TransparentAllDecl =>
-      TypeChecker.runDecls(typeEnv, decls) match {
-        case Right(updatedTypeEnv) => (updatedTypeEnv, metaCtx)
-        case Left(err) => throw TypeCheckError(err)
-      }
+    case Term.PLam(i, body) =>
+      val dimEnv = typeEnv.copy(
+        env = Environment.substitute((i, Formula.Atom(i)), typeEnv.env)
+      )
+      val (elabBody, mc1) = preElaborate(body, dimEnv, metaCtx)
+      (Term.PLam(i, elabBody), mc1)
+
+    case Term.Comp(ty, base, sys) =>
+      val (elabTy, mc0)   = preElaborate(ty, typeEnv, metaCtx)
+      val (elabBase, mc1) = preElaborate(base, typeEnv, mc0)
+      val (elabSys, mc2)  = preElaborateSystem(sys, typeEnv, mc1)
+      (Term.Comp(elabTy, elabBase, elabSys), mc2)
+
+    case Term.Fill(ty, base, sys) =>
+      val (elabTy, mc0)   = preElaborate(ty, typeEnv, metaCtx)
+      val (elabBase, mc1) = preElaborate(base, typeEnv, mc0)
+      val (elabSys, mc2)  = preElaborateSystem(sys, typeEnv, mc1)
+      (Term.Fill(elabTy, elabBase, elabSys), mc2)
+
+    case Term.AppFormula(e, phi) =>
+      val (elabE, mc1) = preElaborate(e, typeEnv, metaCtx)
+      (Term.AppFormula(elabE, phi), mc1)
+
+    case Term.Pair(a, b) =>
+      val (elabA, mc1) = preElaborate(a, typeEnv, metaCtx)
+      val (elabB, mc2) = preElaborate(b, typeEnv, mc1)
+      (Term.Pair(elabA, elabB), mc2)
+
+    case Term.Fst(t) =>
+      val (elabT, mc1) = preElaborate(t, typeEnv, metaCtx)
+      (Term.Fst(elabT), mc1)
+
+    case Term.Snd(t) =>
+      val (elabT, mc1) = preElaborate(t, typeEnv, metaCtx)
+      (Term.Snd(elabT), mc1)
+
+    case Term.Lam(icity, x, a, body) =>
+      // Extend the environment with the lambda variable so that the body can
+      // be pre-elaborated in the correct scope.  Without this, any implicit
+      // application inside the body that refers to `x` (e.g. `Path x y` inside
+      // `\(y:A) → Path x y`) would fail because `x` is not in scope during
+      // pre-elaboration.
+      val domainVal = try Eval.eval(a, typeEnv.env) catch { case _: Exception => Val.VU }
+      val innerTypeEnv = TypeChecker.addTypeVal((x, domainVal), typeEnv)
+      val (elabBody, mc1) = preElaborate(body, innerTypeEnv, metaCtx)
+      (Term.Lam(icity, x, a, elabBody), mc1)
+
+    case Term.Pi(icity, Term.Lam(icity2, x, a, b)) =>
+      val (elabA, mc1) = preElaborate(a, typeEnv, metaCtx)
+      val domainVal = try Eval.eval(a, typeEnv.env) catch { case _: Exception => Val.VU }
+      val innerTypeEnv = TypeChecker.addTypeVal((x, domainVal), typeEnv)
+      val (elabB, mc2) = preElaborate(b, innerTypeEnv, mc1)
+      (Term.Pi(icity, Term.Lam(icity2, x, elabA, elabB)), mc2)
+
+    case Term.Sigma(Term.Lam(icity2, x, a, b)) =>
+      val (elabA, mc1) = preElaborate(a, typeEnv, metaCtx)
+      val domainVal = try Eval.eval(a, typeEnv.env) catch { case _: Exception => Val.VU }
+      val innerTypeEnv = TypeChecker.addTypeVal((x, domainVal), typeEnv)
+      val (elabB, mc2) = preElaborate(b, innerTypeEnv, mc1)
+      (Term.Sigma(Term.Lam(icity2, x, elabA, elabB)), mc2)
+
+    case _ => (term, metaCtx)
+  }
+
+  private def preElaborateSystem(
+    sys: System[Term],
+    typeEnv: TypeEnv,
+    metaCtx: MetaContext
+  ): (System[Term], MetaContext) =
+    sys.foldLeft((Map.empty[Face, Term], metaCtx)) {
+      case ((accSys, mc), (face, t)) =>
+        val faceEnv = TypeChecker.faceEnv(face, typeEnv)
+        val (elabT, mc1) = preElaborate(t, faceEnv, mc)
+        (accSys + (face -> elabT), mc1)
+    }
+
+   private def needsElaboration(term: Term, typeEnv: TypeEnv): Boolean = {
+     val (head, spine) = Term.unApps(term)
+     if (spine.exists(_._1 == Icity.Implicit)) return true
+     head match {
+       case Term.Var(name) =>
+         try {
+           Eval.lookupType(name, typeEnv.env) match {
+             case Val.VPi(Icity.Implicit, _, _) => true
+             case _ => false
+           }
+         } catch {
+           case _: Exception => false
+         }
+       case _ => false
+     }
+   }
+
+  private def isPurelyInferrable(term: Term): Boolean = term match {
+    case Term.Var(_) | Term.U | Term.App(_, _, _) | Term.Fst(_) | Term.Snd(_)
+       | Term.AppFormula(_, _) | Term.Comp(_, _, _) | Term.Fill(_, _, _)
+       | Term.HComp(_, _, _) | Term.UnGlueElem(_, _) | Term.PCon(_, _, _, _)
+       | Term.IdJ(_, _, _, _, _, _) => true
+    case _ => false
   }
 
   /**
-   * Elaborate a sequence of declaration blocks.
-   *
-   * Each block gets a **fresh** `MetaContext` — metas do not leak across
-   * top-level declaration groups.  This matches the standard Agda/Lean
-   * convention where each top-level definition is elaborated independently.
-   *
-   * @param typeEnv   the initial typing environment
-   * @param declsList the list of declaration blocks to elaborate
-   * @return (optional error message, final TypeEnv)
+   * Elaborate a block of mutual declarations, returning the updated environment,
+   * the final metavariable context, and the zonked (meta-substituted) declarations.
    */
+   def elaborateDecls(decls: Declarations, typeEnv: TypeEnv, metaCtx: MetaContext): (TypeEnv, MetaContext, Declarations) = decls match {
+     case Declarations.MutualDecls(loc, declPairs) =>
+       val tempTypeEnv = typeEnv.copy(env = Environment.addDecl(decls, typeEnv.env))
+
+       val (elaboratedPairs, metaCtx1) = declPairs.foldLeft((List.empty[Declaration], metaCtx)) {
+         case ((acc, currentMetaCtx), (name, (tyTerm, bodyTerm))) =>
+            try {
+              val (elaboratedTy, metaCtx2) = check(Val.VU, tyTerm, tempTypeEnv, currentMetaCtx)
+              val zonkedTy = MetaContext.zonkTerm(metaCtx2, elaboratedTy)
+              val tyVal = Eval.eval(zonkedTy, tempTypeEnv.env)
+              val (elaboratedBody, metaCtx3) = check(tyVal, bodyTerm, tempTypeEnv, metaCtx2)
+              (acc :+ (name, (elaboratedTy, elaboratedBody)), metaCtx3)
+           } catch {
+             case e: TypeCheckError   => throw TypeCheckError(s"in declaration [$name]:\n${e.msg}")
+             case e: ElaborationError => throw ElaborationError(s"in declaration [$name]:\n${e.msg}")
+           }
+       }
+
+       val unsolved = metaCtx1.unsolvedMetas
+       if (unsolved.nonEmpty) {
+         throw ElaborationError(
+           s"Unsolved metavariables after elaborating declarations at $loc: " +
+           unsolved.map(id => s"?$id").mkString(", ")
+         )
+       }
+
+       val zonkedPairs = elaboratedPairs.map { case (name, (tyTerm, bodyTerm)) =>
+         val zt = MetaContext.zonkTerm(metaCtx1, tyTerm)
+         val zb = MetaContext.zonkTerm(metaCtx1, bodyTerm)
+         (name, (zt, zb))
+       }
+
+        val zonkedDecls = Declarations.MutualDecls(loc, zonkedPairs)
+        TypeChecker.runDecls(typeEnv, zonkedDecls) match {
+          case Right(updatedTypeEnv) => (updatedTypeEnv, metaCtx1, zonkedDecls)
+          case Left(err) => throw TypeCheckError(err)
+        }
+
+     case Declarations.OpaqueDecl(_) | Declarations.TransparentDecl(_) | Declarations.TransparentAllDecl =>
+       TypeChecker.runDecls(typeEnv, decls) match {
+         case Right(updatedTypeEnv) => (updatedTypeEnv, metaCtx, decls)
+         case Left(err) => throw TypeCheckError(err)
+       }
+   }
+
   def elaborateDeclss(typeEnv: TypeEnv, declsList: List[Declarations]): (Option[String], TypeEnv) =
     declsList match {
       case Nil => (None, typeEnv)
       case decl :: rest =>
-        try {
-          val (updatedTypeEnv, _) = elaborateDecls(decl, typeEnv, MetaContext.empty)
-          elaborateDeclss(updatedTypeEnv, rest)
+         try {
+           val (updatedTypeEnv, _, _) = elaborateDecls(decl, typeEnv, MetaContext.empty)
+           elaborateDeclss(updatedTypeEnv, rest)
         } catch {
           case e: TypeCheckError    => (Some(e.msg), typeEnv)
           case e: ElaborationError  => (Some(e.msg), typeEnv)

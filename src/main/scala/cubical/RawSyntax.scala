@@ -76,15 +76,16 @@ enum RawExpWhere {
  * parser before name resolution.
  *
  * `tele` in `Def`/`Data`/`HData`/`Split`/`Undef` is the raw grouped
- * telescope `[(names, type)]` — groups of names sharing one type annotation,
- * as they appear in source.  The resolver flattens these.
+ * telescope `[(icity, names, type)]` — groups of names sharing one type annotation,
+ * with an icity annotation indicating explicit `(x : A)` vs implicit `{x : A}`.
+ * The resolver flattens these.
  */
 enum RawDecl {
-  case Def(name: String, tele: List[(List[String], RawTerm)], ty: RawTerm, body: RawExpWhere)
-  case Data(name: String, tele: List[(List[String], RawTerm)], labels: List[RawLabel])
-  case HData(name: String, tele: List[(List[String], RawTerm)], labels: List[RawLabel])
-  case Split(name: String, tele: List[(List[String], RawTerm)], ty: RawTerm, branches: List[RawBranch])
-  case Undef(name: String, tele: List[(List[String], RawTerm)], ty: RawTerm)
+  case Def(name: String, tele: List[(Icity, List[String], RawTerm)], ty: RawTerm, body: RawExpWhere)
+  case Data(name: String, tele: List[(Icity, List[String], RawTerm)], labels: List[RawLabel])
+  case HData(name: String, tele: List[(Icity, List[String], RawTerm)], labels: List[RawLabel])
+  case Split(name: String, tele: List[(Icity, List[String], RawTerm)], ty: RawTerm, branches: List[RawBranch])
+  case Undef(name: String, tele: List[(Icity, List[String], RawTerm)], ty: RawTerm)
   case Mutual(decls: List[RawDecl])
   case Opaque(name: String)
   case Transparent(name: String)

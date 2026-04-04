@@ -1,0 +1,39 @@
+-- Lists with implicit type argument where applicable.
+module list where
+
+import prelude
+
+data list (A : U) = nil
+                  | cons (a : A) (as : list A)
+
+-- Note: functions with split bodies use explicit A because split needs
+-- the type to be concretely known at the match site.
+
+append (A : U) : list A -> list A -> list A = split
+  nil       -> \(ys : list A) -> ys
+  cons x xs -> \(ys : list A) -> cons x (append A xs ys)
+
+reverse (A : U) : list A -> list A = split
+  nil       -> nil
+  cons x xs -> append A (reverse A xs) (cons x nil)
+
+map (A B : U) (f : A -> B) : list A -> list B = split
+  nil       -> nil
+  cons x xs -> cons (f x) (map A B f xs)
+
+lem (A B C : U) (f : A -> B) (g : B -> C) :
+    (xs : list A) -> Path {list C} (map B C g (map A B f xs)) (map A C (\ (x : A) -> g (f x)) xs) = split
+  nil       -> <i> nil
+  cons x xs -> <i> cons (g (f x)) (lem A B C f g xs @ i)
+
+lem1 (A : U) : (xs : list A) -> Path {list A} (map A A (\ (x : A) -> x) xs) xs = split
+  nil       -> <i> nil
+  cons x xs -> <i> cons x (lem1 A xs @ i)
+
+lem2 (A : U) : (xs : list A) -> Path {list A} (append A xs nil) xs = split
+  nil       -> <i> nil
+  cons x xs -> <i> cons x (lem2 A xs @ i)
+
+assoc (A : U) : (xs ys zs : list A) -> Path {list A} (append A (append A xs ys) zs) (append A xs (append A ys zs)) = split
+  nil       -> \ (ys zs : list A) -> <i> append A ys zs
+  cons x xs -> \ (ys zs : list A) -> <i> cons x (assoc A xs ys zs @ i)

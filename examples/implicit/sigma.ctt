@@ -1,0 +1,119 @@
+-- Various results about sigma types.
+module sigma where
+
+import equiv
+
+lemPathSig (A : U) (B : A -> U) (t u : Sigma A B) :
+    Path {U} (Path t u) ((p : Path t.1 u.1) * PathP (<i> B (p @ i)) t.2 u.2) =
+  isoPath {T0} {T1} f g s r where
+    T0 : U = Path t u
+    T1 : U = (p : Path t.1 u.1) * PathP (<i> B (p @ i)) t.2 u.2
+    f (q : T0) : T1 = (<i> (q @ i).1, <i> (q @ i).2)
+    g (z : T1) : T0 = <i> (z.1 @ i, z.2 @ i)
+    s (z : T1) : Path {T1} (f (g z)) z = refl {T1} z
+    r (q : T0) : Path {T0} (g (f q)) q = refl {T0} q
+
+lemPathAnd {A B : U} (t u : and A B) :
+    Path {U} (Path t u) (and (Path t.1 u.1) (Path t.2 u.2)) =
+  lemPathSig A (\(_ : A) -> B) t u
+
+lemTransp {A : U} (a : A) : Path a (transport (<_> A) a) = fill (<_> A) a []
+
+funDepTr {A : U} (P : A -> U) (a0 a1 : A) (p : Path a0 a1) (u0 : P a0) (u1 : P a1) :
+    Path {U} (PathP (<i> P (p @ i)) u0 u1) (Path (transport (<i> P (p @ i)) u0) u1) =
+  <j> PathP (<i> P (p @ j \/ i)) (comp (<i> P (p @ j /\ i)) u0 [(j = 0) -> <_> u0]) u1
+
+-- lem2: a special case of funDepTr.
+-- Takes the sigma components as separate args to avoid projection readback in the signature.
+lem2 {A : U} (B : A -> U) (a0 a1 : A) (p : Path a0 a1) (b0 : B a0) (b1 : B a1) :
+    Path {U} (PathP (<i> B (p @ i)) b0 b1) (Path (transport (<i> B (p @ i)) b0) b1) =
+  <j> PathP (<i> B (p @ (j \/ i))) (comp (<i> B (p @ (j /\ i))) b0 [(j = 0) -> <_> b0]) b1
+
+corSigProp {A : U} {B : A -> U} (pB : (x : A) -> prop (B x)) (t u : Sigma A B) (p : Path t.1 u.1) :
+    prop (PathP (<i> B (p @ i)) t.2 u.2) = substInv prop T0 T1 rem rem1
+  where
+    P : Path {U} (B t.1) (B u.1) = <i> B (p @ i)
+    T0 : U = PathP P t.2 u.2
+    T1 : U = Path (transport P t.2) u.2
+    rem : Path {U} T0 T1 = lem2 B t.1 u.1 p t.2 u.2
+    v2 : B u.1 = transport P t.2
+    rem1 : prop T1 = propSet (pB u.1) v2 u.2
+
+corSigSet {A : U} {B : A -> U} (sB : (x : A) -> set (B x)) (t u : Sigma A B) (p : Path t.1 u.1) :
+    prop (PathP (<i> B (p @ i)) t.2 u.2) = substInv prop T0 T1 rem rem1
+  where
+    P : Path {U} (B t.1) (B u.1) = <i> B (p @ i)
+    T0 : U = PathP P t.2 u.2
+    T1 : U = Path (transport P t.2) u.2
+    rem : Path {U} T0 T1 = lem2 B t.1 u.1 p t.2 u.2
+    v2 : B u.1 = transport P t.2
+    rem1 : prop T1 = sB u.1 v2 u.2
+
+setSig {A : U} {B : A -> U} (sA : set A) (sB : (x : A) -> set (B x)) (t u : Sigma A B) :
+    prop (Path t u) =
+  substInv prop (Path t u) ((p : T) * C p) rem3 rem2
+  where
+    T : U = Path t.1 u.1
+    C (p : T) : U = PathP (<i> B (p @ i)) t.2 u.2
+    rem (p : T) : prop (C p) = corSigSet sB t u p
+    rem1 : prop T = sA t.1 u.1
+    rem2 : prop ((p : T) * C p) = propSig T C rem1 rem
+    rem3 : Path {U} (Path t u) ((p : T) * C p) = lemPathSig A B t u
+
+corSigGroupoid {A : U} {B : A -> U} (gB : (x : A) -> groupoid (B x)) (t u : Sigma A B) (p : Path t.1 u.1) :
+    set (PathP (<i> B (p @ i)) t.2 u.2) = substInv set T0 T1 rem rem1
+  where
+    P : Path {U} (B t.1) (B u.1) = <i> B (p @ i)
+    T0 : U = PathP P t.2 u.2
+    T1 : U = Path (transport P t.2) u.2
+    rem : Path {U} T0 T1 = lem2 B t.1 u.1 p t.2 u.2
+    v2 : B u.1 = transport P t.2
+    rem1 : set T1 = gB u.1 v2 u.2
+
+groupoidSig {A : U} {B : A -> U} (gA : groupoid A) (gB : (x : A) -> groupoid (B x)) (t u : Sigma A B) :
+    set (Path t u) =
+  substInv set (Path t u) ((p : T) * C p) rem3 rem2
+  where
+    T : U = Path t.1 u.1
+    C (p : T) : U = PathP (<i> B (p @ i)) t.2 u.2
+    rem (p : T) : set (C p) = corSigGroupoid gB t u p
+    rem1 : set T = gA t.1 u.1
+    rem2 : set ((p : T) * C p) = setSig {T} {C} rem1 rem
+    rem3 : Path {U} (Path t u) ((p : T) * C p) = lemPathSig A B t u
+
+lemContr {A : U} (pA : prop A) (a : A) : isContr A = (a, rem)
+  where rem (y : A) : Path a y = pA a y
+
+lem3 {A : U} {B : A -> U} (pB : (x : A) -> prop (B x)) (t u : Sigma A B) (p : Path t.1 u.1) :
+    isContr (PathP (<i> B (p @ i)) t.2 u.2) = lemContr (substInv prop T0 T1 rem rem1) rem2
+  where
+    P : Path {U} (B t.1) (B u.1) = <i> B (p @ i)
+    T0 : U = PathP P t.2 u.2
+    T1 : U = Path (transport P t.2) u.2
+    rem : Path {U} T0 T1 = lem2 B t.1 u.1 p t.2 u.2
+    v2 : B u.1 = transport P t.2
+    rem1 : prop T1 = propSet (pB u.1) v2 u.2
+    rem2 : T0 = transport (<i> rem @ -i) (pB u.1 v2 u.2)
+
+lem6 {A : U} (P : A -> U) (cA : (x : A) -> isContr (P x)) : Path {U} ((x : A) * P x) A =
+  isoPath f g r s where
+    T : U = (x : A) * P x
+    f (z : T) : A = z.1
+    g (x : A) : T = (x, (cA x).1)
+    r (x : A) : Path (f (g x)) x = refl x
+    s (z : T) : Path (g (f z)) z = <i> (z.1, ((cA z.1).2 z.2) @ i)
+
+lemSigProp {A : U} {B : A -> U} (pB : (x : A) -> prop (B x)) (t u : Sigma A B) :
+    Path {U} (Path t u) (Path t.1 u.1) =
+  compPath (Path t u) ((p : T) * C p) (Path t.1 u.1) rem2 rem1
+  where
+    T : U = Path t.1 u.1
+    C (p : T) : U = PathP (<i> B (p @ i)) t.2 u.2
+    rem (p : T) : isContr (C p) = lem3 pB t u p
+    rem1 : Path {U} ((p : T) * C p) T = lem6 {T} C rem
+    rem2 : Path {U} (Path t u) ((p : T) * C p) = lemPathSig A B t u
+
+setGroupoid {A : U} (sA : set A) (a0 a1 : A) : set (Path a0 a1) =
+  propSet (sA a0 a1)
+
+propGroupoid {A : U} (pA : prop A) : groupoid A = setGroupoid (propSet pA)

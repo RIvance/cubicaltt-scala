@@ -1,0 +1,35 @@
+-- Hedberg's lemma: a type with decidable equality is a set.
+-- All type arguments that are inferrable from other arguments are made implicit.
+module hedberg where
+
+import prelude
+
+hedbergLemma {A : U} (a b : A) (f : (x : A) -> Path a x -> Path a x) (p : Path a b) :
+    Square a a a b (refl a) p (f a (refl a)) (f b p) =
+  comp (<i> Square a a a (p @ i) (<_> a) (<j> p @ i /\ j)
+                  (f a (<_> a)) (f (p @ i) (<j> p @ i /\ j)))
+       (<i> f a (<_> a)) []
+
+hedbergStable {A : U} (a b : A) (h : (x : A) -> stable (Path a x))
+    (p q : Path a b) : Path p q =
+  <j i> comp (<_> A) a [ (j = 0) -> rem2 @ i
+                        , (j = 1) -> rem3 @ i
+                        , (i = 0) -> r
+                        , (i = 1) -> rem4 @ j ]
+  where
+    ra : Path a a = <_> a
+    rem1 (x : A) : exConst (Path a x) = stableConst (Path a x) (h x)
+    f (x : A) : Path a x -> Path a x = (rem1 x).1
+    fIsConst (x : A) : const (Path a x) (f x) = (rem1 x).2
+    rem4 : Square a a b b ra (refl b) (f b p) (f b q) = fIsConst b p q
+    r : Path a a = f a ra
+    rem2 : Square a a a b ra p r (f b p) = hedbergLemma a b f p
+    rem3 : Square a a a b ra q r (f b q) = hedbergLemma a b f q
+
+hedbergS {A : U} (h : (a x : A) -> stable (Path a x)) : set A =
+  \(a b : A) -> hedbergStable a b (h a)
+
+hedberg {A : U} (h : discrete A) : set A = rem
+  where
+  f (a x : A) : stable (Path a x) = decStable (Path a x) (h a x)
+  rem (a b : A) : prop (Path a b) = hedbergStable a b (f a)

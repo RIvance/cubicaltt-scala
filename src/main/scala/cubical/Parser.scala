@@ -377,16 +377,16 @@ private[cubical] class CubicalParser extends Parsers {
       case name ~ tele ~ ty ~ rhs => rhs(name, tele, ty)
     }
 
-  private def rawDeclTypedRhs: Parser[(String, List[(List[String], RawTerm)], RawTerm) => RawDecl] =
+  private def rawDeclTypedRhs: Parser[(String, List[(Icity, List[String], RawTerm)], RawTerm) => RawDecl] =
     (kw("split") ~> tok("{") ~> repsep(branch, tok(";")) <~ tok("}") ^^ {
-      branches => (name: String, tele: List[(List[String], RawTerm)], ty: RawTerm) =>
+      branches => (name: String, tele: List[(Icity, List[String], RawTerm)], ty: RawTerm) =>
         RawDecl.Split(name, tele, ty, branches)
     }) |
     (kw("undefined") ^^^ {
-      (name: String, tele: List[(List[String], RawTerm)], ty: RawTerm) => RawDecl.Undef(name, tele, ty)
+      (name: String, tele: List[(Icity, List[String], RawTerm)], ty: RawTerm) => RawDecl.Undef(name, tele, ty)
     }) |
     (rawExpWhere ^^ {
-      body => (name: String, tele: List[(List[String], RawTerm)], ty: RawTerm) => RawDecl.Def(name, tele, ty, body)
+      body => (name: String, tele: List[(Icity, List[String], RawTerm)], ty: RawTerm) => RawDecl.Def(name, tele, ty, body)
     })
 
   def rawDeclData: Parser[RawDecl] =
@@ -419,13 +419,33 @@ private[cubical] class CubicalParser extends Parsers {
       case e ~ Some(decls) => RawExpWhere.Where(e, decls)
     }
 
-  def rawTele: Parser[List[(List[String], RawTerm)]] =
+  /**
+   * A raw declaration telescope: zero or more entries, each either explicit
+   * `(x₁ x₂ : A)` or implicit `{x₁ x₂ : A}`.  Returns grouped entries as
+   * `(Icity, names, type)` triples (not yet flattened; `Resolver` does that).
+   */
+  def rawTele: Parser[List[(Icity, List[String], RawTerm)]] =
+    rep(
+      tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
+        case names ~ ty => (Icity.Explicit, names, ty)
+      } |
+      tok("{") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok("}") ^^ {
+        case names ~ ty => (Icity.Implicit, names, ty)
+      }
+    )
+
+  /**
+   * Telescope for constructor labels in `data`/`hdata` declarations.
+   * Only explicit entries `(x₁ x₂ : A)` are allowed; returns grouped form
+   * `List[(List[String], RawTerm)]` matching `RawLabel`.
+   */
+  def rawLabelTele: Parser[List[(List[String], RawTerm)]] =
     rep(tok("(") ~> rep1(ident) ~ (tok(":") ~> expr) <~ tok(")") ^^ {
       case names ~ ty => (names, ty)
     })
 
   def rawLabel: Parser[RawLabel] =
-    ident ~ rawTele >> { case name ~ tele =>
+    ident ~ rawLabelTele >> { case name ~ tele =>
       (tok("<") ~> rep1(ident) <~ tok(">")) ~ system ^^ {
         case dims ~ sys => RawLabel.PathLabel(name, tele, dims, sys)
       } | success(RawLabel.OrdinaryLabel(name, tele))

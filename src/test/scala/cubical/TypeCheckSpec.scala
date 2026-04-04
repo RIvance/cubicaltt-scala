@@ -13,6 +13,7 @@ object Slow extends Tag("Slow")
 class TypeCheckSpec extends AnyFlatSpec with ParallelTestExecution {
 
   private val examplesDir = new File("examples")
+  private val implicitDir = new File("examples/implicit")
   private val slowDir = new File("examples/slow")
 
   private def cttFiles(dir: File): Array[File] =
@@ -21,10 +22,16 @@ class TypeCheckSpec extends AnyFlatSpec with ParallelTestExecution {
       .filter(f => f.isFile && f.getName.endsWith(".ctt"))
       .sortBy(_.getName)
 
-  private val searchDirs: List[File] = List(examplesDir, slowDir).filter(_.isDirectory)
+  private val searchDirs: List[File] = List(examplesDir, implicitDir, slowDir).filter(_.isDirectory)
 
   cttFiles(examplesDir).foreach { file =>
     "Type checker" should s"successfully check ${file.getName}" in {
+      TypeCheckSpec.checkFile(file, searchDirs)
+    }
+  }
+
+  cttFiles(implicitDir).foreach { file =>
+    "Type checker" should s"successfully check implicit/${file.getName}" in {
       TypeCheckSpec.checkFile(file, searchDirs)
     }
   }
