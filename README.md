@@ -158,7 +158,7 @@ sbt assembly
 Or run directly via sbt:
 
 ```sh
-sbt run examples/demo.ctt
+sbt "run examples/demo.ctt"
 ```
 
 ---
@@ -166,19 +166,24 @@ sbt run examples/demo.ctt
 ## Usage
 
 ```
-cubicaltt [options] <file.ctt>
+cubicaltt [options] [file.ctt]
 
 Options:
   --help     print help
   --version  print version
   -d         debug/verbose mode
   -b         batch mode (no REPL)
+  -r         load file and launch REPL (default: eval only)
   -t         measure time
 ```
 
+By default, providing a file runs in **eval-only mode**: the file is type checked and evaluated, then the program exits. Use `-r` to load the file and enter the interactive REPL instead.
+
+If no file is provided (or the file path is invalid), the REPL is launched with an empty environment.
+
 ### Interactive REPL
 
-When a file is loaded, an interactive loop is started. Available commands:
+When the REPL is active (no file, invalid file, or `-r` flag), the following commands are available:
 
 ```
 <statement>     infer type and evaluate statement

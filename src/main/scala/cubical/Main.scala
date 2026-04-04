@@ -9,7 +9,8 @@ object Main {
   case class Options(
     verbose: Boolean = true,
     batch: Boolean = false,
-    time: Boolean = false
+    time: Boolean = false,
+    repl: Boolean = false
   )
 
   def main(args: Array[String]): Unit = {
@@ -21,6 +22,7 @@ object Main {
       case "-d" | "--debug"   => options = options.copy(verbose = true)
       case "-b" | "--batch"   => options = options.copy(batch = true)
       case "-t" | "--time"    => options = options.copy(time = true)
+      case "-r" | "--repl"    => options = options.copy(repl = true)
       case "--help"           => printUsage(); helpOrVersion = true
       case "--version"        => println("cubicaltt-scala 0.1.0"); helpOrVersion = true
       case f                  => files = files :+ f
@@ -30,15 +32,17 @@ object Main {
     files match {
       case Nil =>
         println("cubicaltt-scala — Cubical Type Theory in Scala 3")
-        println("Usage: cubicaltt [options] <file.ctt>")
-        println("  --help     print help")
-        println("  --version  print version")
-        println("  -d         debug/verbose mode")
-        println("  -b         batch mode (no REPL)")
-        println("  -t         measure time")
+        repl(options, "", Nil, if (options.verbose) TypeEnv.verboseEnv else TypeEnv.silentEnv)
       case f :: Nil =>
-        println(s"cubicaltt-scala — Loading $f")
-        initLoop(options, f)
+        val file = new File(f)
+        if (!file.exists()) {
+          println(s"Error: file '$f' not found")
+          println("Launching REPL...")
+          repl(options, "", Nil, if (options.verbose) TypeEnv.verboseEnv else TypeEnv.silentEnv)
+        } else {
+          println(s"cubicaltt-scala — Loading $f")
+          initLoop(options, f)
+        }
       case _ =>
         println("Error: expected zero or one file")
         printUsage()
@@ -46,12 +50,17 @@ object Main {
   }
 
   private def printUsage(): Unit = {
-    println("Usage: cubicaltt [options] <file.ctt>")
+    println("Usage: cubicaltt [options] [file.ctt]")
     println("  --help     print help")
     println("  --version  print version")
     println("  -d         debug/verbose mode")
     println("  -b         batch mode (no REPL)")
+    println("  -r         load file and launch REPL (default: eval only)")
     println("  -t         measure time")
+    println()
+    println("If no file is provided, launches the REPL.")
+    println("If a file is provided, type checks and evaluates it (eval-only mode).")
+    println("Use -r to load a file and enter the REPL.")
   }
 
   case class LoadedModule(
@@ -153,7 +162,7 @@ object Main {
           if (modules.nonEmpty) println("File loaded.")
       }
 
-      if (!options.batch) {
+      if (options.repl && !options.batch) {
         repl(options, filePath, allNames, tenv)
       }
     } catch {
